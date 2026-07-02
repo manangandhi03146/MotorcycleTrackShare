@@ -679,15 +679,16 @@ struct ActivityFeedService {
 
     /// Feed items the current user is allowed to see. RLS filters everything
     /// down to actor-own + follower/group/public rows. The `.in` filter keeps
-    /// the feed focused on meaningful social activity only: route shares and
-    /// new bike additions (per product spec).
+    /// the feed focused on meaningful social activity only: route shares,
+    /// new bike additions, and group-ride announcements (per product spec).
     func feed(limit: Int = 40) async throws -> [ActivityEvent] {
         try await client
             .from(SocialTable.activityFeed)
             .select()
             .in("kind", values: [
                 ActivityKind.sharedRoutePosted.rawValue,
-                ActivityKind.bikeAdded.rawValue
+                ActivityKind.bikeAdded.rawValue,
+                ActivityKind.groupRideCreated.rawValue
             ])
             .order("created_at", ascending: false)
             .limit(limit)

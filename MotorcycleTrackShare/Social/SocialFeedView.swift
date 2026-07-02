@@ -146,6 +146,17 @@ struct ActivityFeedTab: View {
             } else {
                 FeedRow(event: event, actor: actor)
             }
+        case .groupRideCreated:
+            if let subjectID = event.subjectID {
+                NavigationLink {
+                    GroupRideDetailView(rideID: subjectID)
+                } label: {
+                    FeedRow(event: event, actor: actor)
+                }
+                .buttonStyle(.plain)
+            } else {
+                FeedRow(event: event, actor: actor)
+            }
         default:
             FeedRow(event: event, actor: actor)
         }
@@ -214,7 +225,7 @@ private struct FeedRow: View {
                     Text(actorLine)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.textPrimary)
-                    if event.kind == .sharedRoutePosted {
+                    if event.kind == .sharedRoutePosted || event.kind == .groupRideCreated {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(Color.textTertiary)
