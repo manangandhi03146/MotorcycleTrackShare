@@ -1,5 +1,16 @@
 import SwiftUI
 
+/// Broadcast so `ContentView` can flip to the Rides tab and start
+/// recording the moment a joined participant taps "Start Ride" on
+/// the group ride detail. Using NotificationCenter (rather than the
+/// old `@AppStorage` signal) sidesteps the SwiftUI edge case where a
+/// cross-view UserDefaults write inside a dismissed sheet wasn't
+/// consistently waking the observer on the main tab.
+extension Notification.Name {
+    static let raceLineStartGroupRideRecording =
+        Notification.Name("raceLineStartGroupRideRecording")
+}
+
 // MARK: - Row (list inside GroupDetailView)
 
 /// Compact card used inside the group detail "Planned Rides" section.
@@ -349,6 +360,7 @@ struct GroupRideDetailView: View {
                 }
             }
             .padding(20)
+            .padding(.bottom, 60)
         }
         .background(Color.appBg.ignoresSafeArea())
         .navigationTitle("Group Ride")
@@ -470,18 +482,22 @@ struct GroupRideDetailView: View {
             .buttonStyle(.plain)
             .disabled(actionInFlight)
 
-            if isJoined {
+            // A participant "Start Ride" only appears once the ride is
+            // active (creator has kicked it off), matching what the
+            // creator sees below. Tapping it jumps to the Rides tab
+            // and immediately begins recording, linked to this ride.
+            if isJoined && !isAuthor && ride.status == .active {
                 Button {
-                    activateAndDismiss(ride)
+                    startRideRecording(for: ride)
                 } label: {
                     HStack(spacing: 10) {
-                        Image(systemName: "record.circle.fill")
-                        Text("Start RaceLine Recording")
+                        Image(systemName: "play.fill")
+                        Text("Start Ride")
                     }
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity, minHeight: 46)
-                    .background(Color.green.opacity(0.85))
+                    .background(Color.appAccent)
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 .buttonStyle(.plain)
@@ -571,7 +587,16 @@ struct GroupRideDetailView: View {
             VStack(spacing: 10) {
                 if ride.status == .planned {
                     Button {
-                        Task { await setStatus(.active) }
+                        Task {
+                            await setStatus(.active)
+                            // Immediately kick off the local recording
+                            // so the creator's Start Ride is a single
+                            // tap: flips the ride to active AND jumps
+                            // to the Rides tab with recording running.
+                            if let updated = ride as GroupRide? {
+                                startRideRecording(for: updated)
+                            }
+                        }
                     } label: {
                         actionLabel("Start Ride", icon: "play.fill")
                             .foregroundStyle(.white)
@@ -717,24 +742,20 @@ struct GroupRideDetailView: View {
         }
     }
 
-    /// "Start RaceLine Recording" — writes two AppStorage values that
-    /// the main tab watches:
-    ///
-    /// 1. `activeGroupRideID` — sticks around for the whole recording
-    ///    session so `ContentView.saveRide()` can link the resulting
-    ///    ride row to the group ride.
-    /// 2. `startGroupRideRecordingRequest` — a one-shot signal. When
-    ///    `ContentView` sees this change, it jumps to the Rides tab
-    ///    and calls the normal `beginRide(.street)` flow. It's cleared
-    ///    immediately after firing so the same request never triggers
-    ///    twice.
-    ///
-    /// The dismiss on this side just closes the detail view — the
-    /// tab switch happens in ContentView the moment the AppStorage
-    /// change propagates.
-    private func activateAndDismiss(_ ride: GroupRide) {
+    /// Kick off the normal ride recording from inside the group ride
+    /// detail. Sets `activeGroupRideID` so the saved ride gets linked
+    /// on cloud sync, dismisses this view, and posts a notification
+    /// that ContentView listens to. ContentView flips the tab to
+    /// Rides and calls the same `beginRide(.street)` path the manual
+    /// Start Ride button uses — so the timer, distance, lean angle,
+    /// and Stop button all behave the same as a solo ride.
+    private func startRideRecording(for ride: GroupRide) {
         activeGroupRideIDString = ride.id.uuidString
-        UserDefaults.standard.set(ride.id.uuidString, forKey: "startGroupRideRecordingRequest")
+        NotificationCenter.default.post(
+            name: .raceLineStartGroupRideRecording,
+            object: nil,
+            userInfo: ["rideID": ride.id, "title": ride.title]
+        )
         dismiss()
     }
 }

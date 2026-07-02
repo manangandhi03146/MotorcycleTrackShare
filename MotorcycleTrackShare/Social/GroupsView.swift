@@ -442,6 +442,9 @@ struct GroupDetailView: View {
                 }
             }
             .padding(20)
+            // Extra breathing room so the destructive Leave/Delete
+            // buttons aren't clipped by the tab bar / home indicator.
+            .padding(.bottom, 60)
         }
         .background(Color.appBg.ignoresSafeArea())
         .navigationTitle(group.name)

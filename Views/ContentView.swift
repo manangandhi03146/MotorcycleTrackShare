@@ -24,10 +24,9 @@ struct ContentView: View {
     @StateObject private var customShareCards = CustomShareCardService()
     @State private var selectedTab: Tab = .ride
 
-    // Phase 4 — one-shot signal set by GroupRideDetailView when the user
-    // taps "Start RaceLine Recording". `.onChange` below picks it up,
-    // switches to the Rides tab, and kicks off the normal ride flow.
-    @AppStorage("startGroupRideRecordingRequest") private var groupRideRecordingRequest: String = ""
+    // Phase 4 — banner shown on the recording screen when the ride
+    // was started from a group ride, populated by the notification
+    // observer below.
     @State private var groupRideBanner: String? = nil
 
     // Map state
@@ -305,14 +304,10 @@ struct ContentView: View {
                 groupRideBanner = nil
             }
         }
-        .onChange(of: groupRideRecordingRequest) { _, newValue in
-            handleGroupRideRecordingRequest(newValue)
-        }
-        .onAppear {
-            // Fire once if the request was set before this view was on screen.
-            if !groupRideRecordingRequest.isEmpty {
-                handleGroupRideRecordingRequest(groupRideRecordingRequest)
-            }
+        .onReceive(NotificationCenter.default.publisher(for: .raceLineStartGroupRideRecording)) { note in
+            let rideID  = note.userInfo?["rideID"] as? UUID
+            let title   = (note.userInfo?["title"] as? String) ?? "group ride"
+            handleGroupRideRecordingRequest(rideID: rideID, title: title)
         }
         .alert("Ride too short to save", isPresented: $showTooShortAlert) {
             Button("OK", role: .cancel) { }
@@ -375,29 +370,26 @@ struct ContentView: View {
         UIApplication.shared.isIdleTimerDisabled = true
     }
 
-    /// Reacts to a one-shot signal set by GroupRideDetailView's
-    /// "Start RaceLine Recording" button. Switches to the Rides tab
-    /// and begins recording (defaulting to street) so the user goes
-    /// straight from the group ride sheet into the live recording UI.
-    private func handleGroupRideRecordingRequest(_ raw: String) {
-        guard !raw.isEmpty else { return }
-        // Clear the request immediately so we never fire twice.
-        groupRideRecordingRequest = ""
+    /// Reacts to the .raceLineStartGroupRideRecording notification
+    /// posted by GroupRideDetailView. Switches to the Rides tab and
+    /// begins recording (defaulting to street) so the user is dropped
+    /// straight into the live recording UI with timer, distance, and
+    /// lean angle ticking.
+    private func handleGroupRideRecordingRequest(rideID: UUID?, title: String) {
+        // Always switch to Rides so the notification is observable to
+        // the user even if the recording can't start.
+        selectedTab = .ride
 
         if recorder.isRecording {
-            // Already recording — just jump to the tab so the user can
-            // see the live UI.
-            selectedTab = .ride
+            groupRideBanner = "Recording as part of \(title)"
             return
         }
         if location.isPermissionBlocked {
-            selectedTab = .ride
             showLocationDeniedAlert = true
             return
         }
-        selectedTab = .ride
         beginRide(rideType: .street)
-        groupRideBanner = "Recording as part of a group ride"
+        groupRideBanner = "Recording as part of \(title)"
     }
 
     private func saveRide() {
