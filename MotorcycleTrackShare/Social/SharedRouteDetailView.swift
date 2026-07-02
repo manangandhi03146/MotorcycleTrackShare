@@ -43,7 +43,7 @@ struct SharedRouteDetailView: View {
             .padding(20)
         }
         .background(Color.appBg.ignoresSafeArea())
-        .navigationTitle("Shared Route")
+        .navigationTitle("Shared Ride")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Color.appSurface, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
@@ -57,7 +57,7 @@ struct SharedRouteDetailView: View {
             HStack(spacing: 8) {
                 Image(systemName: "map")
                     .foregroundStyle(Color.appAccent)
-                Text("SHARED ROUTE")
+                Text("SHARED RIDE")
                     .font(.system(size: 11, weight: .bold))
                     .kerning(1.2)
                     .foregroundStyle(Color.appAccent)
@@ -218,6 +218,7 @@ struct SharedRouteDetailView: View {
                 errorMessage = e.errorDescription ?? "Couldn't load this route."
             }
         } catch {
+            guard !isCancellationError(error) else { return }
             errorMessage = userFacingSupabaseError(error, feature: "shared route")
         }
     }

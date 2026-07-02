@@ -1,10 +1,34 @@
 import SwiftUI
 
+/// In-memory cache shared across the Social hub so switching segments
+/// (feed → groups → feed) doesn't wipe out fetched data and force a
+/// visible reload. Each `Tab` view reads from and writes to this cache
+/// via `@EnvironmentObject`, so their `@State` no longer resets when
+/// SwiftUI recreates them on segment switch.
+@MainActor
+final class SocialHubCache: ObservableObject {
+    @Published var feedEvents: [ActivityEvent] = []
+    @Published var feedProfilesByID: [UUID: SocialProfile] = [:]
+    @Published var feedLastLoaded: Date?
+
+    @Published var mutuals: [SocialProfile] = []
+    @Published var followingIDs: Set<UUID> = []
+    @Published var mutualsLastLoaded: Date?
+
+    @Published var groups: [GroupSummary] = []
+    @Published var groupsLastLoaded: Date?
+
+    @Published var challenges: [Challenge] = []
+    @Published var challengeProgress: [UUID: ChallengeProgress] = [:]
+    @Published var challengesLastLoaded: Date?
+}
+
 /// Top-level Social tab. Segmented hub for the four Phase 3 surfaces:
 /// activity feed, groups, challenges, and riders (public profiles).
 /// Uses the shared design system tokens so it feels native to RaceLine.
 struct SocialHubView: View {
     @EnvironmentObject private var authService: AuthService
+    @StateObject private var cache = SocialHubCache()
 
     @State private var selection: SocialSegment = .feed
 
@@ -36,6 +60,7 @@ struct SocialHubView: View {
                     case .riders:     RidersTab()
                     }
                 }
+                .environmentObject(cache)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .safeAreaInset(edge: .top, spacing: 0) { header }
@@ -89,35 +114,52 @@ struct SocialHubView: View {
 
 struct ActivityFeedTab: View {
     @EnvironmentObject private var authService: AuthService
+    @EnvironmentObject private var cache: SocialHubCache
 
-    @State private var state: LoadState = .loading
-    @State private var events: [ActivityEvent] = []
-    @State private var profilesByID: [UUID: SocialProfile] = [:]
+    @State private var state: LoadState = .idle
+    @State private var errorMessage: String?
 
     private let feedService = ActivityFeedService()
     private let profileService = SocialProfileService()
 
-    private enum LoadState: Equatable { case loading, loaded, empty, error(String) }
+    private enum LoadState: Equatable { case idle, loading, refreshing, loaded, empty, error }
+
+    /// Skip re-fetch if we just pulled the feed. Prevents the top of
+    /// the feed from stuttering as the user hops between segments.
+    private var cacheIsFresh: Bool {
+        guard let last = cache.feedLastLoaded else { return false }
+        return Date().timeIntervalSince(last) < 30
+    }
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 12) {
-                switch state {
-                case .loading:
-                    LoadingBlock(message: "Loading feed…")
+                if cache.feedEvents.isEmpty {
+                    switch state {
+                    case .loading, .idle, .refreshing:
+                        LoadingBlock(message: "Loading feed…")
+                            .padding(.top, 40)
+                    case .empty:
+                        EmptyStateView(
+                            icon: "sparkles",
+                            title: "Your feed is quiet",
+                            message: "Follow other riders or join a group to start seeing activity here."
+                        )
                         .padding(.top, 40)
-                case .empty:
-                    EmptyStateView(
-                        icon: "sparkles",
-                        title: "Your feed is quiet",
-                        message: "Follow other riders or join a group to start seeing activity here."
-                    )
-                    .padding(.top, 40)
-                case .error(let message):
-                    ErrorBlock(message: message) { Task { await reload() } }
+                    case .error:
+                        ErrorBlock(message: errorMessage ?? "Couldn't load feed.") {
+                            Task { await reload(force: true) }
+                        }
                         .padding(.top, 40)
-                case .loaded:
-                    ForEach(events) { event in
+                    case .loaded:
+                        // Shouldn't happen (loaded implies non-empty), but keep exhaustive.
+                        EmptyView()
+                    }
+                } else {
+                    // Cached events stay visible even while refreshing so
+                    // the feed never blanks on tab switches or pull-to-
+                    // refresh.
+                    ForEach(cache.feedEvents) { event in
                         feedRow(for: event)
                     }
                 }
@@ -126,14 +168,14 @@ struct ActivityFeedTab: View {
             .padding(.top, 12)
             .padding(.bottom, 100)
         }
-        .refreshable { await reload() }
-        .task { await reload() }
+        .refreshable { await reload(force: true) }
+        .task { await reload(force: false) }
     }
 
     // Wrap in a NavigationLink when the event kind has a tappable target.
     @ViewBuilder
     private func feedRow(for event: ActivityEvent) -> some View {
-        let actor = profilesByID[event.actorID]
+        let actor = cache.feedProfilesByID[event.actorID]
         switch event.kind {
         case .sharedRoutePosted:
             if let subjectID = event.subjectID {
@@ -162,30 +204,61 @@ struct ActivityFeedTab: View {
         }
     }
 
-    private func reload() async {
+    /// `force = true` skips the freshness gate — used by pull-to-refresh
+    /// and the Try Again button. Normal `.task` fires pass `force = false`
+    /// so tab switches inside the 30-second window are basically free.
+    private func reload(force: Bool) async {
         guard authService.isLoggedIn else {
-            state = .error("Sign in to see your feed.")
+            state = .error
+            errorMessage = "Sign in to see your feed."
             return
         }
-        state = .loading
+        if !force && cacheIsFresh { return }
+        state = cache.feedEvents.isEmpty ? .loading : .refreshing
         do {
-            let list = try await feedService.feed(limit: 40)
-            events = list
+            async let listTask = feedService.feed(limit: 40)
+            let list = try await listTask
+            cache.feedEvents = list
+            cache.feedLastLoaded = Date()
             state = list.isEmpty ? .empty : .loaded
-            await loadActorProfiles(for: list)
+            // Fire-and-forget the profile fetch so a slow profiles query
+            // doesn't hold the feed content off screen. The cached
+            // profiles map fills in as they arrive.
+            Task { await loadActorProfiles(for: list) }
         } catch {
-            state = .error(userFacingSupabaseError(error, feature: "feed"))
+            guard !isCancellationError(error) else { return }
+            errorMessage = userFacingSupabaseError(error, feature: "feed")
+            // Preserve existing content — only surface the error card
+            // when we have nothing at all to show.
+            if cache.feedEvents.isEmpty {
+                state = .error
+            } else {
+                state = .loaded
+            }
         }
     }
 
     private func loadActorProfiles(for events: [ActivityEvent]) async {
         let ids = Set(events.map(\.actorID))
-        let missing = ids.subtracting(profilesByID.keys)
+        let missing = ids.subtracting(cache.feedProfilesByID.keys)
         guard !missing.isEmpty else { return }
         if let fetched = try? await profileService.fetchProfiles(userIDs: Array(missing)) {
-            for p in fetched { profilesByID[p.id] = p }
+            for p in fetched { cache.feedProfilesByID[p.id] = p }
         }
     }
+}
+
+/// True when the error came from a cancelled Task rather than an actual
+/// failure. Reloads triggered by rapid tab switches routinely throw these
+/// mid-flight; surfacing them as "couldn't load" would be misleading. The
+/// URLError side covers Supabase's underlying URLSession request being
+/// cancelled when the surrounding Task tears down.
+func isCancellationError(_ error: Error) -> Bool {
+    if error is CancellationError { return true }
+    let ns = error as NSError
+    if ns.domain == NSURLErrorDomain, ns.code == NSURLErrorCancelled { return true }
+    if ns.domain == "NSURLErrorDomain", ns.code == -999 { return true }
+    return false
 }
 
 /// Turns raw Supabase / Postgrest errors into a message that helps diagnose
@@ -231,7 +304,7 @@ private struct FeedRow: View {
                             .foregroundStyle(Color.textTertiary)
                     }
                 }
-                if let title = event.title, !title.isEmpty {
+                if let title = displayTitle {
                     Text(title)
                         .font(.system(size: 14))
                         .foregroundStyle(Color.textPrimary)
@@ -258,6 +331,17 @@ private struct FeedRow: View {
         }
         return "A rider"
     }
+
+    /// Rewrite user-facing titles at display time so legacy rows in the
+    /// activity_feed table say "Shared a ride" instead of the old
+    /// "Shared a route" copy without needing to rewrite the table.
+    private var displayTitle: String? {
+        guard let raw = event.title, !raw.isEmpty else { return nil }
+        if event.kind == .sharedRoutePosted, raw == "Shared a route" {
+            return "Shared a ride"
+        }
+        return raw
+    }
 }
 
 // MARK: - Groups tab (thin wrapper around GroupsView)
@@ -280,16 +364,21 @@ struct ChallengesTab: View {
 /// that sheet, not on the main page (per product spec).
 struct RidersTab: View {
     @EnvironmentObject private var authService: AuthService
+    @EnvironmentObject private var cache: SocialHubCache
 
-    @State private var mutuals: [SocialProfile] = []
-    @State private var followingIDs: Set<UUID> = []
-    @State private var state: LoadState = .loading
+    @State private var state: LoadState = .idle
+    @State private var errorMessage: String?
     @State private var showAddSheet = false
 
     private let profileService = SocialProfileService()
     private let followService  = FollowService()
 
-    private enum LoadState: Equatable { case loading, loaded, empty, error(String) }
+    private enum LoadState: Equatable { case idle, loading, loaded, empty, error }
+
+    private var cacheIsFresh: Bool {
+        guard let last = cache.mutualsLastLoaded else { return false }
+        return Date().timeIntervalSince(last) < 30
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -299,22 +388,28 @@ struct RidersTab: View {
 
             ScrollView {
                 LazyVStack(spacing: 10) {
-                    switch state {
-                    case .loading:
-                        LoadingBlock(message: "Loading friends…")
+                    if cache.mutuals.isEmpty {
+                        switch state {
+                        case .idle, .loading:
+                            LoadingBlock(message: "Loading friends…")
+                                .padding(.top, 40)
+                        case .empty:
+                            EmptyStateView(
+                                icon: "person.2",
+                                title: "No riding buddies yet",
+                                message: "Tap + to search for riders. When two of you follow each other, you'll show up here."
+                            )
                             .padding(.top, 40)
-                    case .empty:
-                        EmptyStateView(
-                            icon: "person.2",
-                            title: "No riding buddies yet",
-                            message: "Tap + to search for riders. When two of you follow each other, you'll show up here."
-                        )
-                        .padding(.top, 40)
-                    case .error(let m):
-                        ErrorBlock(message: m) { Task { await reload() } }
+                        case .error:
+                            ErrorBlock(message: errorMessage ?? "Couldn't load friends.") {
+                                Task { await reload(force: true) }
+                            }
                             .padding(.top, 20)
-                    case .loaded:
-                        ForEach(mutuals) { profile in
+                        case .loaded:
+                            EmptyView()
+                        }
+                    } else {
+                        ForEach(cache.mutuals) { profile in
                             friendRow(profile)
                         }
                     }
@@ -322,13 +417,16 @@ struct RidersTab: View {
                 .padding(.horizontal, 12)
                 .padding(.bottom, 100)
             }
-            .refreshable { await reload() }
+            .refreshable { await reload(force: true) }
         }
-        .task { await reload() }
+        .task { await reload(force: false) }
         .sheet(isPresented: $showAddSheet) {
-            AddRidersSheet(followingIDs: $followingIDs, onDone: {
+            AddRidersSheet(followingIDs: Binding(
+                get: { cache.followingIDs },
+                set: { cache.followingIDs = $0 }
+            ), onDone: {
                 showAddSheet = false
-                Task { await reload() }
+                Task { await reload(force: true) }
             })
             .presentationDetents([.large])
         }
@@ -389,28 +487,36 @@ struct RidersTab: View {
         .buttonStyle(.plain)
     }
 
-    private func reload() async {
+    private func reload(force: Bool) async {
         guard let me = authService.userID else {
-            state = .error("Sign in to see your riding buddies.")
+            state = .error
+            errorMessage = "Sign in to see your riding buddies."
             return
         }
-        state = .loading
+        if !force && cacheIsFresh { return }
+        if cache.mutuals.isEmpty { state = .loading }
         do {
-            let mutualIDs = try await followService.mutuals(userID: me)
-            followingIDs = Set(try await followService.following(userID: me))
+            async let mutualIDsTask   = followService.mutuals(userID: me)
+            async let followingIDTask = followService.following(userID: me)
+            let (mutualIDs, followingIDs) = try await (mutualIDsTask, followingIDTask)
+            cache.followingIDs = Set(followingIDs)
             if mutualIDs.isEmpty {
-                mutuals = []
+                cache.mutuals = []
+                cache.mutualsLastLoaded = Date()
                 state = .empty
                 return
             }
             let profiles = try await profileService.fetchProfiles(userIDs: mutualIDs)
             let byID = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
-            mutuals = mutualIDs.compactMap { byID[$0] }.sorted {
+            cache.mutuals = mutualIDs.compactMap { byID[$0] }.sorted {
                 ($0.displayName ?? $0.username ?? "") < ($1.displayName ?? $1.username ?? "")
             }
-            state = mutuals.isEmpty ? .empty : .loaded
+            cache.mutualsLastLoaded = Date()
+            state = cache.mutuals.isEmpty ? .empty : .loaded
         } catch {
-            state = .error(userFacingSupabaseError(error, feature: "friends"))
+            guard !isCancellationError(error) else { return }
+            errorMessage = userFacingSupabaseError(error, feature: "friends")
+            state = cache.mutuals.isEmpty ? .error : .loaded
         }
     }
 }

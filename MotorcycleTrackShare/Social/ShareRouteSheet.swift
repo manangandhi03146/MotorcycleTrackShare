@@ -1,5 +1,32 @@
 import SwiftUI
 
+/// Track which local rides the current user has already shared to the
+/// feed. Backed by UserDefaults so the check survives app restarts, but
+/// doesn't require a DB round-trip on every share attempt. Keys stay
+/// scoped to the local `SavedRide.id` so re-sharing after cloud-sync
+/// doesn't create phantom dupes.
+enum SharedRideRegistry {
+    private static let key = "sharedRideIDsByUser"
+
+    private static func map() -> [String: [String]] {
+        (UserDefaults.standard.dictionary(forKey: key) as? [String: [String]]) ?? [:]
+    }
+
+    static func hasShared(rideID: UUID, userID: UUID) -> Bool {
+        map()[userID.uuidString]?.contains(rideID.uuidString) ?? false
+    }
+
+    static func markShared(rideID: UUID, userID: UUID) {
+        var current = map()
+        var forUser = current[userID.uuidString] ?? []
+        if !forUser.contains(rideID.uuidString) {
+            forUser.append(rideID.uuidString)
+            current[userID.uuidString] = forUser
+            UserDefaults.standard.set(current, forKey: key)
+        }
+    }
+}
+
 /// Sheet that lets a rider publish a saved ride's route to a chosen audience.
 /// Route sanitizer (hide start/end + trim N points) runs in-app before insert
 /// so the sensitive tail points never touch Supabase for private variants.
@@ -36,7 +63,7 @@ struct ShareRouteSheet: View {
             Color.appBg.ignoresSafeArea()
             VStack(spacing: 0) {
                 AppSheetHeader(
-                    title: "Share Route",
+                    title: "Share Ride",
                     onCancel: { dismiss() },
                     saveLabel: "Share",
                     isSaveDisabled: saving || title.trimmingCharacters(in: .whitespaces).isEmpty,
@@ -161,6 +188,13 @@ struct ShareRouteSheet: View {
             errorMessage = "Pick a group to share with."
             return
         }
+        // Block double-shares: if this rider already published this
+        // ride's route, tell them instead of silently duplicating the
+        // feed entry.
+        if SharedRideRegistry.hasShared(rideID: ride.id, userID: uid) {
+            errorMessage = "You've already shared this ride. Delete the existing share first if you want to re-share."
+            return
+        }
         saving = true
         defer { saving = false }
         let points = SharedRouteService.sanitize(
@@ -191,6 +225,7 @@ struct ShareRouteSheet: View {
         )
         do {
             let saved = try await routeService.post(insert)
+            SharedRideRegistry.markShared(rideID: ride.id, userID: uid)
             // Skip the activity emit entirely for private routes — they
             // shouldn't appear in any follower / group / public feed.
             if visibility != .privateOnly {
@@ -207,7 +242,7 @@ struct ShareRouteSheet: View {
                     kind: .sharedRoutePosted,
                     subjectID: saved.id,
                     subjectKind: "shared_route",
-                    title: "Shared a route",
+                    title: "Shared a ride",
                     summary: saved.title,
                     visibility: feedVisibility,
                     groupID: saved.groupID

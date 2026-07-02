@@ -327,6 +327,7 @@ struct GroupRideDetailView: View {
     @State private var actionInFlight = false
 
     @State private var showLiveShareWarning = false
+    @State private var showDeleteConfirm = false
     @StateObject private var liveLocation = LiveLocationSharingService()
 
     private let rideService = GroupRideService()
@@ -369,6 +370,12 @@ struct GroupRideDetailView: View {
         .toolbarColorScheme(.dark, for: .navigationBar)
         .task { await reload() }
         .refreshable { await reload() }
+        .alert("Delete this ride?", isPresented: $showDeleteConfirm) {
+            Button("Delete", role: .destructive) { Task { await deleteRide() } }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This removes the ride from the group for everyone. This can't be undone.")
+        }
         .alert("Share your live location?", isPresented: $showLiveShareWarning) {
             Button("Share", role: .none) {
                 if let uid = authService.userID, let ride {
@@ -627,6 +634,18 @@ struct GroupRideDetailView: View {
                     .buttonStyle(.plain)
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
+                // Delete is always available to the author regardless of
+                // status — riders need a way to clear out cancelled or
+                // completed rides that are cluttering the group page.
+                Button(role: .destructive) {
+                    showDeleteConfirm = true
+                } label: {
+                    actionLabel("Delete Ride", icon: "trash")
+                        .foregroundStyle(.white)
+                        .background(Color.red)
+                }
+                .buttonStyle(.plain)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
         }
     }
@@ -701,6 +720,7 @@ struct GroupRideDetailView: View {
             participants = p
             await loadParticipantProfiles(p)
         } catch {
+            guard !isCancellationError(error) else { return }
             errorMessage = userFacingSupabaseError(error, feature: "group ride")
         }
     }
@@ -739,6 +759,19 @@ struct GroupRideDetailView: View {
             }
         } catch {
             errorMessage = "Couldn't update ride status."
+        }
+    }
+
+    /// Author-initiated hard delete. Works regardless of status so the
+    /// group page can be cleaned of stale planned / cancelled / completed
+    /// rides.
+    private func deleteRide() async {
+        do {
+            liveLocation.stop()
+            try await rideService.delete(rideID: rideID)
+            dismiss()
+        } catch {
+            errorMessage = "Couldn't delete this ride."
         }
     }
 

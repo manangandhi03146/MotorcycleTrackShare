@@ -129,6 +129,7 @@ struct PublicProfileView: View {
                 isFollowing = (try? await followService.isFollowing(follower: me, followee: userID)) ?? false
             }
         } catch {
+            guard !isCancellationError(error) else { return }
             errorMessage = "Couldn't load this profile."
         }
     }
@@ -191,7 +192,6 @@ struct SocialPrivacyView: View {
                             groupHeader("Activity visibility")
                             toggleRow("Show my ride activities", value: bound.showRideActivities)
                             toggleRow("Show my challenge activities", value: bound.showChallengeActivities)
-                            toggleRow("Show my maintenance activities", value: bound.showMaintenanceActivities)
                             toggleRow("Show my group activities", value: bound.showGroupActivities)
 
                             groupHeader("Route sharing")

@@ -4,40 +4,51 @@ import SwiftUI
 /// no top-speed leaderboards or public-road speed contests.
 struct ChallengesView: View {
     @EnvironmentObject private var authService: AuthService
+    @EnvironmentObject private var cache: SocialHubCache
 
-    @State private var challenges: [Challenge] = []
-    @State private var progressByID: [UUID: ChallengeProgress] = [:]
-    @State private var state: LoadState = .loading
+    @State private var state: LoadState = .idle
+    @State private var errorMessage: String?
 
     private let service = ChallengeService()
 
-    private enum LoadState: Equatable { case loading, loaded, empty, error(String) }
+    private enum LoadState: Equatable { case idle, loading, loaded, empty, error }
+
+    private var cacheIsFresh: Bool {
+        guard let last = cache.challengesLastLoaded else { return false }
+        return Date().timeIntervalSince(last) < 30
+    }
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 10) {
-                switch state {
-                case .loading:
-                    LoadingBlock(message: "Loading challenges…")
+                if cache.challenges.isEmpty {
+                    switch state {
+                    case .idle, .loading:
+                        LoadingBlock(message: "Loading challenges…")
+                            .padding(.top, 40)
+                    case .empty:
+                        EmptyStateView(
+                            icon: "target",
+                            title: "No active challenges",
+                            message: "Check back soon — new challenges roll out with each season."
+                        )
                         .padding(.top, 40)
-                case .empty:
-                    EmptyStateView(
-                        icon: "target",
-                        title: "No active challenges",
-                        message: "Check back soon — new challenges roll out with each season."
-                    )
-                    .padding(.top, 40)
-                case .error(let m):
-                    ErrorBlock(message: m) { Task { await reload() } }
+                    case .error:
+                        ErrorBlock(message: errorMessage ?? "Couldn't load challenges.") {
+                            Task { await reload(force: true) }
+                        }
                         .padding(.top, 20)
-                case .loaded:
-                    ForEach(challenges) { challenge in
+                    case .loaded:
+                        EmptyView()
+                    }
+                } else {
+                    ForEach(cache.challenges) { challenge in
                         NavigationLink {
                             ChallengeDetailView(challenge: challenge)
                         } label: {
                             ChallengeRow(
                                 challenge: challenge,
-                                progress: progressByID[challenge.id]
+                                progress: cache.challengeProgress[challenge.id]
                             )
                         }
                         .buttonStyle(.plain)
@@ -48,23 +59,35 @@ struct ChallengesView: View {
             .padding(.top, 12)
             .padding(.bottom, 100)
         }
-        .refreshable { await reload() }
-        .task { await reload() }
+        .refreshable { await reload(force: true) }
+        .task { await reload(force: false) }
     }
 
-    private func reload() async {
-        state = .loading
+    private func reload(force: Bool) async {
+        if !force && cacheIsFresh { return }
+        if cache.challenges.isEmpty { state = .loading }
         do {
-            let list = try await service.activeChallenges()
-            var progresses: [ChallengeProgress] = []
-            if let uid = authService.userID {
-                progresses = (try? await service.progress(userID: uid)) ?? []
-            }
-            challenges = list
-            progressByID = Dictionary(uniqueKeysWithValues: progresses.map { ($0.challengeID, $0) })
+            async let listTask = service.activeChallenges()
+            let list = try await listTask
+            cache.challenges = list
+            cache.challengesLastLoaded = Date()
             state = list.isEmpty ? .empty : .loaded
+            // Progress request is decoupled from the challenge list so a
+            // slow per-user query never blocks the challenge cards from
+            // rendering.
+            if let uid = authService.userID {
+                Task {
+                    if let progresses = try? await service.progress(userID: uid) {
+                        cache.challengeProgress = Dictionary(
+                            uniqueKeysWithValues: progresses.map { ($0.challengeID, $0) }
+                        )
+                    }
+                }
+            }
         } catch {
-            state = .error(userFacingSupabaseError(error, feature: "challenges"))
+            guard !isCancellationError(error) else { return }
+            errorMessage = userFacingSupabaseError(error, feature: "challenges")
+            state = cache.challenges.isEmpty ? .error : .loaded
         }
     }
 }

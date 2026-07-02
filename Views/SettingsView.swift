@@ -18,12 +18,38 @@ struct SettingsView: View {
     @State private var pendingStorageMode: StorageMode?
     @State private var showForceResyncConfirm = false
 
+    // MARK: - Profile identity / visibility state
+    //
+    // Moved here from ProfileView so all the "settings" (username,
+    // display name, public toggles, social-privacy sheet) live in one
+    // place — the Profile tab now only shows identity, personal bests,
+    // and bio.
+    @State private var socialProfile: SocialProfile?
+    @State private var socialUsername      = ""
+    @State private var socialDisplayName   = ""
+    @State private var socialIsPublic      = false
+    @State private var socialShowBikes     = false
+    @State private var socialShowRideStats = true
+    @State private var socialProfileLoaded = false
+    @State private var socialSaving        = false
+    @State private var socialError: String?
+    @State private var showSocialPrivacy   = false
+
+    private let socialProfileService = SocialProfileService()
+
     private var defaultStorageMode: StorageMode {
         StorageMode(rawValue: defaultStorageModeRaw)?.canonical ?? .localOnly
     }
 
     var body: some View {
         List {
+            // Profile (username, display name, visibility)
+            if authService.isLoggedIn {
+                profileIdentitySection
+                profileVisibilitySection
+                profilePrivacyLinkSection
+            }
+
             // Cloud sync
             if authService.isLoggedIn {
                 Section {
@@ -245,6 +271,172 @@ struct SettingsView: View {
             }
         } message: {
             Text("Full route data includes exact GPS coordinates that can reveal your home, workplace, and frequently visited locations. Are you sure?")
+        }
+        .sheet(isPresented: $showSocialPrivacy) {
+            SocialPrivacyView()
+                .presentationDetents([.large])
+        }
+        .task { await loadSocialProfile() }
+    }
+
+    // MARK: - Profile identity (moved off Profile tab)
+
+    private var profileIdentitySection: some View {
+        Section {
+            TextField("Display name", text: $socialDisplayName)
+                .foregroundStyle(Color.textPrimary)
+                .autocorrectionDisabled()
+            TextField("Username", text: $socialUsername)
+                .foregroundStyle(Color.textPrimary)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+            if socialProfileLoaded && isSocialIdentityDirty {
+                Button {
+                    Task { await saveSocialProfile() }
+                } label: {
+                    HStack {
+                        Text(socialSaving ? "Saving…" : "Save")
+                            .foregroundStyle(Color.appAccent)
+                        Spacer()
+                        if socialSaving { ProgressView().scaleEffect(0.8) }
+                    }
+                }
+                .disabled(socialSaving)
+            }
+            if let socialError {
+                Text(socialError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        } header: {
+            Text("Profile")
+        } footer: {
+            Text("Username has to be unique. Display name is what other riders see on your profile and in the feed.")
+                .font(.caption)
+        }
+    }
+
+    private var profileVisibilitySection: some View {
+        Section {
+            Toggle("Public profile", isOn: $socialIsPublic)
+                .tint(Color.appAccent)
+                .onChange(of: socialIsPublic) { _, _ in
+                    scheduleVisibilitySave()
+                }
+            Toggle("Show my bikes", isOn: $socialShowBikes)
+                .tint(Color.appAccent)
+                .disabled(!socialIsPublic)
+                .onChange(of: socialShowBikes) { _, _ in
+                    scheduleVisibilitySave()
+                }
+            Toggle("Show my ride stats", isOn: $socialShowRideStats)
+                .tint(Color.appAccent)
+                .disabled(!socialIsPublic)
+                .onChange(of: socialShowRideStats) { _, _ in
+                    scheduleVisibilitySave()
+                }
+        } header: {
+            Text("Profile Visibility")
+        } footer: {
+            Text("Only fields you turn on here are visible to other riders. Email, sign-in provider, and exact ride routes are never shared.")
+                .font(.caption)
+        }
+    }
+
+    private var profilePrivacyLinkSection: some View {
+        Section {
+            Button {
+                showSocialPrivacy = true
+            } label: {
+                HStack {
+                    Label("Social Privacy", systemImage: "lock.shield")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .foregroundStyle(Color.appAccent)
+            }
+        } header: {
+            Text("Privacy Defaults")
+        } footer: {
+            Text("Activity visibility and default route-sharing behavior.")
+                .font(.caption)
+        }
+    }
+
+    private var isSocialIdentityDirty: Bool {
+        guard let baseline = socialProfile else { return false }
+        let username    = socialUsername.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let displayName = socialDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return username    != (baseline.username ?? "")
+            || displayName != (baseline.displayName ?? "")
+    }
+
+    private func loadSocialProfile() async {
+        guard !socialProfileLoaded, let uid = authService.userID else { return }
+        do {
+            let existing = try await socialProfileService.fetchProfile(userID: uid)
+            socialProfile       = existing
+            socialUsername      = existing?.username ?? ""
+            socialDisplayName   = existing?.displayName ?? ""
+            socialIsPublic      = existing?.isPublic ?? false
+            socialShowBikes     = existing?.showBikes ?? false
+            socialShowRideStats = existing?.showRideStats ?? true
+            socialProfileLoaded = true
+        } catch {
+            guard !isCancellationError(error) else { return }
+            socialError = "Couldn't load your profile."
+        }
+    }
+
+    /// Toggling a visibility switch autosaves — the toggles double as
+    /// their own commits so there's no "Save" button hunt in Settings.
+    private func scheduleVisibilitySave() {
+        guard socialProfileLoaded else { return }
+        Task { await saveVisibility() }
+    }
+
+    private func saveVisibility() async {
+        guard let uid = authService.userID else { return }
+        do {
+            let updated = try await socialProfileService.updateProfile(
+                userID: uid,
+                SocialProfileUpdate(
+                    isPublic: socialIsPublic,
+                    showBikes: socialShowBikes,
+                    showRideStats: socialShowRideStats
+                )
+            )
+            socialProfile = updated
+            socialError   = nil
+        } catch let e as SocialError {
+            socialError = e.errorDescription
+        } catch {
+            socialError = "Couldn't save. Try again."
+        }
+    }
+
+    private func saveSocialProfile() async {
+        guard let uid = authService.userID else { return }
+        socialSaving = true
+        socialError  = nil
+        defer { socialSaving = false }
+        let username    = socialUsername.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let displayName = socialDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            let updated = try await socialProfileService.updateProfile(
+                userID: uid,
+                SocialProfileUpdate(
+                    username: username.isEmpty ? nil : username,
+                    displayName: displayName.isEmpty ? nil : displayName
+                )
+            )
+            socialProfile = updated
+        } catch let e as SocialError {
+            socialError = e.errorDescription
+        } catch {
+            socialError = "Couldn't save. Try again."
         }
     }
 

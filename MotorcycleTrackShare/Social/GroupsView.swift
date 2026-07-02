@@ -7,9 +7,10 @@ import SwiftUI
 struct GroupsView: View {
     @EnvironmentObject private var authService: AuthService
     @EnvironmentObject private var proFeatures: ProFeatureManager
+    @EnvironmentObject private var cache: SocialHubCache
 
-    @State private var groups: [GroupSummary] = []
-    @State private var state: LoadState = .loading
+    @State private var state: LoadState = .idle
+    @State private var errorMessage: String?
     @State private var showCreateSheet = false
     @State private var showJoinSheet = false
     @State private var showGroupLimitSheet = false
@@ -21,10 +22,15 @@ struct GroupsView: View {
     /// `ProFeatureManager.freeGroupLimit` — joining others is unlimited.
     private var ownedGroupCount: Int {
         guard let uid = authService.userID else { return 0 }
-        return groups.filter { $0.ownerID == uid }.count
+        return cache.groups.filter { $0.ownerID == uid }.count
     }
 
-    private enum LoadState: Equatable { case loading, loaded, empty, error(String) }
+    private enum LoadState: Equatable { case idle, loading, loaded, empty, error }
+
+    private var cacheIsFresh: Bool {
+        guard let last = cache.groupsLastLoaded else { return false }
+        return Date().timeIntervalSince(last) < 30
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -34,22 +40,28 @@ struct GroupsView: View {
 
             ScrollView {
                 LazyVStack(spacing: 10) {
-                    switch state {
-                    case .loading:
-                        LoadingBlock(message: "Loading groups…")
+                    if cache.groups.isEmpty {
+                        switch state {
+                        case .idle, .loading:
+                            LoadingBlock(message: "Loading groups…")
+                                .padding(.top, 40)
+                        case .empty:
+                            EmptyStateView(
+                                icon: "person.3",
+                                title: "No groups yet",
+                                message: "Create a crew for your riding buddies or join one with a code."
+                            )
                             .padding(.top, 40)
-                    case .empty:
-                        EmptyStateView(
-                            icon: "person.3",
-                            title: "No groups yet",
-                            message: "Create a crew for your riding buddies or join one with a code."
-                        )
-                        .padding(.top, 40)
-                    case .error(let m):
-                        ErrorBlock(message: m) { Task { await reload() } }
+                        case .error:
+                            ErrorBlock(message: errorMessage ?? "Couldn't load groups.") {
+                                Task { await reload(force: true) }
+                            }
                             .padding(.top, 20)
-                    case .loaded:
-                        ForEach(groups) { group in
+                        case .loaded:
+                            EmptyView()
+                        }
+                    } else {
+                        ForEach(cache.groups) { group in
                             NavigationLink {
                                 GroupDetailView(group: group)
                             } label: {
@@ -70,13 +82,14 @@ struct GroupsView: View {
                 .padding(.bottom, 100)
             }
         }
-        .task { await reload() }
-        .refreshable { await reload() }
+        .task { await reload(force: false) }
+        .refreshable { await reload(force: true) }
         .sheet(isPresented: $showCreateSheet) {
             CreateGroupSheet { newGroup in
                 showCreateSheet = false
                 if let newGroup {
-                    groups.insert(newGroup, at: 0)
+                    cache.groups.insert(newGroup, at: 0)
+                    cache.groupsLastLoaded = Date()
                     state = .loaded
                 }
             }
@@ -85,7 +98,7 @@ struct GroupsView: View {
         .sheet(isPresented: $showJoinSheet) {
             JoinGroupSheet { joined in
                 showJoinSheet = false
-                if joined != nil { Task { await reload() } }
+                if joined != nil { Task { await reload(force: true) } }
             }
             .presentationDetents([.medium, .large])
         }
@@ -166,18 +179,23 @@ struct GroupsView: View {
         .minimalCard()
     }
 
-    private func reload() async {
+    private func reload(force: Bool) async {
         guard let uid = authService.userID else {
-            state = .error("Sign in to see your groups.")
+            state = .error
+            errorMessage = "Sign in to see your groups."
             return
         }
-        state = .loading
+        if !force && cacheIsFresh { return }
+        if cache.groups.isEmpty { state = .loading }
         do {
             let list = try await service.groups(forUser: uid)
-            groups = list
+            cache.groups = list
+            cache.groupsLastLoaded = Date()
             state = list.isEmpty ? .empty : .loaded
         } catch {
-            state = .error(userFacingSupabaseError(error, feature: "groups"))
+            guard !isCancellationError(error) else { return }
+            errorMessage = userFacingSupabaseError(error, feature: "groups")
+            state = cache.groups.isEmpty ? .error : .loaded
         }
     }
 }
@@ -340,6 +358,7 @@ struct GroupDetailView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var members: [GroupMember] = []
+    @State private var memberProfiles: [UUID: SocialProfile] = [:]
     @State private var rides: [GroupRide] = []
     @State private var loading = true
     @State private var errorMessage: String?
@@ -546,14 +565,21 @@ struct GroupDetailView: View {
             .foregroundStyle(Color.textGhost)
     }
 
+    @ViewBuilder
     private func memberRow(_ member: GroupMember) -> some View {
+        let profile = memberProfiles[member.userID]
         HStack(spacing: 12) {
-            Image(systemName: "person.fill")
-                .foregroundStyle(Color.appAccent)
-                .frame(width: 26)
-            Text(shortID(member.userID))
-                .font(.system(size: 13))
-                .foregroundStyle(Color.textPrimary)
+            ProfileAvatarBubble(profile: profile, size: 32)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(memberDisplayName(for: member, profile: profile))
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.textPrimary)
+                if let username = profile?.username, !username.isEmpty {
+                    Text("@\(username)")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.textSecondary)
+                }
+            }
             Spacer()
             Text(member.role.displayName)
                 .font(.system(size: 11, weight: .semibold))
@@ -569,8 +595,13 @@ struct GroupDetailView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
-    private func shortID(_ id: UUID) -> String {
-        String(id.uuidString.prefix(8))
+    private func memberDisplayName(for member: GroupMember, profile: SocialProfile?) -> String {
+        if member.userID == authService.userID { return "You" }
+        if let profile {
+            if let name = profile.displayName, !name.isEmpty { return name }
+            if let username = profile.username, !username.isEmpty { return "@\(username)" }
+        }
+        return "Rider"
     }
 
     private func reload() async {
@@ -582,8 +613,18 @@ struct GroupDetailView: View {
             let (mList, rList) = try await (m, r)
             members = mList
             rides = rList
+            await loadMemberProfiles(mList)
         } catch {
+            guard !isCancellationError(error) else { return }
             errorMessage = "Couldn't load group. Check your connection."
+        }
+    }
+
+    private func loadMemberProfiles(_ list: [GroupMember]) async {
+        let missing = Set(list.map(\.userID)).subtracting(memberProfiles.keys)
+        guard !missing.isEmpty else { return }
+        if let fetched = try? await SocialProfileService().fetchProfiles(userIDs: Array(missing)) {
+            for p in fetched { memberProfiles[p.id] = p }
         }
     }
 

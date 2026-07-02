@@ -5,27 +5,23 @@ struct ProfileView: View {
     @EnvironmentObject private var authService: AuthService
     @EnvironmentObject private var rideStore: RideStore
     @EnvironmentObject private var syncService: SyncService
-    @AppStorage("defaultStorageMode") private var defaultStorageModeRaw: String = StorageMode.localOnly.rawValue
 
     @State private var isLoggingOut = false
     @State private var showDeleteAccountConfirm = false
     @State private var isDeleting = false
     @State private var showDeleteError = false
     @State private var showPrivacyPolicy = false
-    @State private var showSocialPrivacy = false
 
-    // Inline profile-edit state — replaces the old EditOwnProfileView sheet.
+    // Inline profile-edit state — only the bio + avatar live on this
+    // tab now. Username, display name, visibility toggles, and the
+    // social-privacy sheet all moved into Settings so the Profile tab
+    // stays focused on the rider's headline identity.
     @State private var socialProfile: SocialProfile?
     @State private var loadingProfile = true
     @State private var savingProfile  = false
     @State private var profileError: String?
 
-    @State private var username = ""
-    @State private var displayName = ""
     @State private var bio = ""
-    @State private var isPublicProfile = false
-    @State private var showBikes = false
-    @State private var showRideStats = true
 
     @State private var avatarPickerItem: PhotosPickerItem?
     @State private var localAvatarImage: UIImage?
@@ -34,21 +30,13 @@ struct ProfileView: View {
 
     private let socialProfileService = SocialProfileService()
 
-    private var defaultStorageMode: StorageMode {
-        StorageMode(rawValue: defaultStorageModeRaw) ?? .localOnly
-    }
-
     private var profile: UserProfile? { authService.state.profile }
 
     private var identityHeadline: String {
+        if let name = socialProfile?.displayName, !name.isEmpty { return name }
         if let name = profile?.displayName, !name.isEmpty { return name }
         if let email = profile?.email, !email.isEmpty     { return email }
         return "Signed in"
-    }
-
-    private var identitySubtitle: String? {
-        guard let name = profile?.displayName, !name.isEmpty else { return nil }
-        return profile?.email
     }
 
     // MARK: - All-time stats
@@ -79,14 +67,18 @@ struct ProfileView: View {
         ScrollView {
             VStack(spacing: 24) {
 
-                // Unified identity block: avatar + editable name/username/bio
+                // Identity: avatar + name at the top.
                 identityBlock
                     .padding(.top, 24)
 
-                // Visibility toggles (was in the old Public Profile sheet)
-                visibilitySection
+                // Personal bests promoted just under the avatar so it's
+                // the first substantive content the rider sees.
+                personalBestsBlock
 
-                // Save row — only prompts when there's something to save
+                // Bio stays inline — it's a lightweight, expressive field
+                // that reads better here than buried in Settings.
+                bioBlock
+
                 if isProfileDirty {
                     saveProfileRow
                 }
@@ -97,22 +89,6 @@ struct ProfileView: View {
                         .foregroundStyle(.red)
                         .padding(.horizontal, 24)
                 }
-
-                // Personal bests (unchanged)
-                personalBestsBlock
-
-                // Sharing / activity privacy defaults — still a sheet since
-                // this is a longer settings surface rather than identity.
-                VStack(spacing: 10) {
-                    sectionHeader("PRIVACY DEFAULTS")
-
-                    profileLinkRow(
-                        icon: "lock.shield",
-                        title: "Social Privacy",
-                        subtitle: "Activity visibility and route sharing defaults"
-                    ) { showSocialPrivacy = true }
-                }
-                .padding(.horizontal, 16)
 
                 // Account actions
                 VStack(spacing: 10) {
@@ -179,10 +155,6 @@ struct ProfileView: View {
         .sheet(isPresented: $showPrivacyPolicy) {
             PrivacyPolicySheet()
         }
-        .sheet(isPresented: $showSocialPrivacy) {
-            SocialPrivacyView()
-                .presentationDetents([.large])
-        }
     }
 
     // MARK: - Identity block
@@ -190,7 +162,22 @@ struct ProfileView: View {
     private var identityBlock: some View {
         VStack(spacing: 16) {
             avatarPicker
-            identityFields
+            HStack(spacing: 6) {
+                Image(systemName: "icloud.fill").font(.system(size: 12))
+                Text(identityHeadline)
+                    .font(.system(size: 15, weight: .semibold))
+                    .lineLimit(1)
+                if let badge = syncBadge {
+                    Text(badge)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.red)
+                        .clipShape(Capsule())
+                }
+            }
+            .foregroundStyle(Color.appAccent)
         }
         .padding(.horizontal, 20)
     }
@@ -261,79 +248,22 @@ struct ProfileView: View {
         .frame(width: 96, height: 96)
     }
 
-    private var identityFields: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 6) {
-                Image(systemName: "icloud.fill").font(.system(size: 12))
-                Text(identityHeadline)
-                    .font(.system(size: 14, weight: .semibold))
-                    .lineLimit(1)
-                if let badge = syncBadge {
-                    Text(badge)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Color.red)
-                        .clipShape(Capsule())
-                }
-            }
-            .foregroundStyle(Color.appAccent)
-
-            AppFieldGroup(label: "DISPLAY NAME") {
-                TextField("", text: $displayName, prompt: .appPrompt("Your rider name"))
-                    .foregroundStyle(Color.textPrimary)
-                    .appFieldChrome()
-            }
-            AppFieldGroup(label: "USERNAME") {
-                TextField("", text: $username, prompt: .appPrompt("racer_42"))
-                    .foregroundStyle(Color.textPrimary)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .appFieldChrome()
-            }
-            AppFieldGroup(label: "BIO") {
-                TextField("", text: $bio,
-                          prompt: .appPrompt("Sport-touring in the PNW"),
-                          axis: .vertical)
-                    .lineLimit(3, reservesSpace: true)
-                    .foregroundStyle(Color.textPrimary)
-                    .appFieldChrome()
-            }
-        }
-    }
-
-    private var visibilitySection: some View {
-        VStack(spacing: 10) {
-            sectionHeader("VISIBILITY")
-            VStack(spacing: 10) {
-                Toggle("Make my profile public", isOn: $isPublicProfile)
-                    .tint(Color.appAccent)
-                    .foregroundStyle(Color.textPrimary)
-                    .appFieldChrome()
-                Toggle("Show my bikes on my profile", isOn: $showBikes)
-                    .tint(Color.appAccent)
-                    .foregroundStyle(Color.textPrimary)
-                    .appFieldChrome()
-                    .disabled(!isPublicProfile)
-                Toggle("Show my ride stats on my profile", isOn: $showRideStats)
-                    .tint(Color.appAccent)
-                    .foregroundStyle(Color.textPrimary)
-                    .appFieldChrome()
-                    .disabled(!isPublicProfile)
-            }
-            Text("Only fields you turn on here are visible to other riders. Email, sign-in provider, and exact ride routes are never shared.")
-                .font(.caption)
-                .foregroundStyle(Color.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+    private var bioBlock: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("BIO")
+            TextField("", text: $bio,
+                      prompt: .appPrompt("Sport-touring in the PNW"),
+                      axis: .vertical)
+                .lineLimit(3, reservesSpace: true)
+                .foregroundStyle(Color.textPrimary)
+                .appFieldChrome()
         }
         .padding(.horizontal, 20)
     }
 
     private var saveProfileRow: some View {
         PrimaryButton(
-            title: savingProfile ? "Saving…" : "Save Profile",
+            title: savingProfile ? "Saving…" : "Save Bio",
             isLoading: savingProfile,
             isDestructive: false
         ) {
@@ -382,43 +312,6 @@ struct ProfileView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func profileLinkRow(icon: String,
-                                title: String,
-                                subtitle: String,
-                                action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.appAccent.opacity(0.15))
-                        .frame(width: 36, height: 36)
-                    Image(systemName: icon)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Color.appAccent)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Color.textPrimary)
-                    Text(subtitle)
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.textSecondary)
-                        .lineLimit(1)
-                }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.textTertiary)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .background(Color.appSurface)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        }
-        .buttonStyle(.plain)
-    }
-
     private var profileHeader: some View {
         HStack {
             Text("Profile")
@@ -455,15 +348,8 @@ struct ProfileView: View {
 
     private var isProfileDirty: Bool {
         guard let baseline = socialProfile else { return false }
-        let trimmedUsername    = username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let trimmedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedBio         = bio.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmedUsername    != (baseline.username ?? "")
-            || trimmedDisplayName != (baseline.displayName ?? "")
-            || trimmedBio         != (baseline.bio ?? "")
-            || isPublicProfile    != baseline.isPublic
-            || showBikes          != baseline.showBikes
-            || showRideStats      != baseline.showRideStats
+        let trimmedBio = bio.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedBio != (baseline.bio ?? "")
     }
 
     private func loadSocialProfile() async {
@@ -476,14 +362,10 @@ struct ProfileView: View {
         do {
             let existing = try await socialProfileService.fetchProfile(userID: uid)
             socialProfile = existing
-            username        = existing?.username ?? ""
-            displayName     = existing?.displayName ?? ""
-            bio             = existing?.bio ?? ""
-            isPublicProfile = existing?.isPublic ?? false
-            showBikes       = existing?.showBikes ?? false
-            showRideStats   = existing?.showRideStats ?? true
-            avatarPath      = existing?.avatarPath
+            bio        = existing?.bio ?? ""
+            avatarPath = existing?.avatarPath
         } catch {
+            guard !isCancellationError(error) else { return }
             profileError = "Couldn't load your profile."
         }
     }
@@ -494,21 +376,14 @@ struct ProfileView: View {
         profileError  = nil
         defer { savingProfile = false }
 
-        let trimmedUsername    = username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let trimmedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedBio         = bio.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedBio = bio.trimmingCharacters(in: .whitespacesAndNewlines)
 
         do {
             let updated = try await socialProfileService.updateProfile(
                 userID: uid,
                 SocialProfileUpdate(
-                    username: trimmedUsername.isEmpty ? nil : trimmedUsername,
-                    displayName: trimmedDisplayName.isEmpty ? nil : trimmedDisplayName,
                     bio: trimmedBio.isEmpty ? nil : trimmedBio,
-                    avatarPath: avatarPath,
-                    isPublic: isPublicProfile,
-                    showBikes: showBikes,
-                    showRideStats: showRideStats
+                    avatarPath: avatarPath
                 )
             )
             socialProfile = updated
@@ -536,14 +411,12 @@ struct ProfileView: View {
                 profileError = "Couldn't decode that image. Try a JPEG or PNG."
                 return
             }
-            // Downscale to keep uploads snappy.
             let resized = image.resized(toMaxDimension: 512) ?? image
             localAvatarImage = resized
             avatarUploading = true
             defer { avatarUploading = false }
             let path = try await socialProfileService.uploadAvatar(resized, userID: uid)
             avatarPath = path
-            // Persist the path on the profile row so other riders can see it.
             let updated = try await socialProfileService.updateProfile(
                 userID: uid,
                 SocialProfileUpdate(avatarPath: path)
