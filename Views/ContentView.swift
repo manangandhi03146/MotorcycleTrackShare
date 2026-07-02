@@ -107,6 +107,14 @@ struct ContentView: View {
         .environmentObject(proFeatures)
         .environmentObject(cloudBackup)
         .environmentObject(customShareCards)
+        // Group ride "Start Ride" fires this notification. Kept at the
+        // outer body so the observer survives tab switches — attaching
+        // it to `rideRecordingView` (which is only rendered on the
+        // Rides tab) meant the notification vanished when the user was
+        // on Social.
+        .onReceive(NotificationCenter.default.publisher(for: .raceLineStartGroupRideRecording)) { note in
+            handleGroupRideRecordingNotification(note)
+        }
     }
 
     // MARK: - Ride Detail Cover
@@ -303,9 +311,6 @@ struct ContentView: View {
                 maybePresentSavePrompt()
                 groupRideBanner = nil
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .raceLineStartGroupRideRecording)) { note in
-            handleGroupRideRecordingNotification(note)
         }
         .alert("Ride too short to save", isPresented: $showTooShortAlert) {
             Button("OK", role: .cancel) { }
