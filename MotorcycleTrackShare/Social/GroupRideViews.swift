@@ -717,13 +717,24 @@ struct GroupRideDetailView: View {
         }
     }
 
-    /// "Start RaceLine Recording" — sets a pointer to this group ride
-    /// so the ride recording view can (eventually) attach the ride id
-    /// to the saved ride, then dismisses the sheet so the user can
-    /// press record on the main tab. Keeping this shallow avoids
-    /// duplicating the recording pipeline.
+    /// "Start RaceLine Recording" — writes two AppStorage values that
+    /// the main tab watches:
+    ///
+    /// 1. `activeGroupRideID` — sticks around for the whole recording
+    ///    session so `ContentView.saveRide()` can link the resulting
+    ///    ride row to the group ride.
+    /// 2. `startGroupRideRecordingRequest` — a one-shot signal. When
+    ///    `ContentView` sees this change, it jumps to the Rides tab
+    ///    and calls the normal `beginRide(.street)` flow. It's cleared
+    ///    immediately after firing so the same request never triggers
+    ///    twice.
+    ///
+    /// The dismiss on this side just closes the detail view — the
+    /// tab switch happens in ContentView the moment the AppStorage
+    /// change propagates.
     private func activateAndDismiss(_ ride: GroupRide) {
         activeGroupRideIDString = ride.id.uuidString
+        UserDefaults.standard.set(ride.id.uuidString, forKey: "startGroupRideRecordingRequest")
         dismiss()
     }
 }

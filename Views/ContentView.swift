@@ -24,6 +24,12 @@ struct ContentView: View {
     @StateObject private var customShareCards = CustomShareCardService()
     @State private var selectedTab: Tab = .ride
 
+    // Phase 4 — one-shot signal set by GroupRideDetailView when the user
+    // taps "Start RaceLine Recording". `.onChange` below picks it up,
+    // switches to the Rides tab, and kicks off the normal ride flow.
+    @AppStorage("startGroupRideRecordingRequest") private var groupRideRecordingRequest: String = ""
+    @State private var groupRideBanner: String? = nil
+
     // Map state
     @State private var position: MapCameraPosition = .region(
         MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 40.0, longitude: -74.0),
@@ -231,6 +237,16 @@ struct ContentView: View {
 
                 // Safety disclaimer during recording
                 if recorder.isRecording {
+                    if let banner = groupRideBanner {
+                        Label(banner, systemImage: "person.3.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color.appAccent.opacity(0.85))
+                            .clipShape(Capsule())
+                            .padding(.bottom, 4)
+                    }
                     Text("Do not interact with the app while riding.")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(Color.textGhost)
@@ -284,7 +300,19 @@ struct ContentView: View {
         .onChange(of: recorder.summary) { _, _ in maybePresentSavePrompt() }
         .onChange(of: recorder.fileURL) { _, _ in maybePresentSavePrompt() }
         .onChange(of: recorder.isRecording) { _, isRec in
-            if !isRec { maybePresentSavePrompt() }
+            if !isRec {
+                maybePresentSavePrompt()
+                groupRideBanner = nil
+            }
+        }
+        .onChange(of: groupRideRecordingRequest) { _, newValue in
+            handleGroupRideRecordingRequest(newValue)
+        }
+        .onAppear {
+            // Fire once if the request was set before this view was on screen.
+            if !groupRideRecordingRequest.isEmpty {
+                handleGroupRideRecordingRequest(groupRideRecordingRequest)
+            }
         }
         .alert("Ride too short to save", isPresented: $showTooShortAlert) {
             Button("OK", role: .cancel) { }
@@ -347,6 +375,31 @@ struct ContentView: View {
         UIApplication.shared.isIdleTimerDisabled = true
     }
 
+    /// Reacts to a one-shot signal set by GroupRideDetailView's
+    /// "Start RaceLine Recording" button. Switches to the Rides tab
+    /// and begins recording (defaulting to street) so the user goes
+    /// straight from the group ride sheet into the live recording UI.
+    private func handleGroupRideRecordingRequest(_ raw: String) {
+        guard !raw.isEmpty else { return }
+        // Clear the request immediately so we never fire twice.
+        groupRideRecordingRequest = ""
+
+        if recorder.isRecording {
+            // Already recording — just jump to the tab so the user can
+            // see the live UI.
+            selectedTab = .ride
+            return
+        }
+        if location.isPermissionBlocked {
+            selectedTab = .ride
+            showLocationDeniedAlert = true
+            return
+        }
+        selectedTab = .ride
+        beginRide(rideType: .street)
+        groupRideBanner = "Recording as part of a group ride"
+    }
+
     private func saveRide() {
         guard let s = recorder.summary, let log = recorder.fileURL else {
             showNameSheet = false
@@ -401,7 +454,8 @@ struct ContentView: View {
                     await Self.attachGroupRide(groupRideID: groupRideID,
                                                localRideID: localRideID,
                                                userID: userID)
-                    UserDefaults.standard.removeObject(forKey: "activeGroupRideID")
+                    // The synchronous clear below (unconditional) already
+                    // resets activeGroupRideID for the next ride.
                 }
             }
         }
@@ -409,6 +463,12 @@ struct ContentView: View {
         // Phase 3 — no ride-completion feed emit. Per product spec, the
         // Social feed only surfaces route shares and new bike additions.
         // Users share a ride to the feed explicitly via the Share button.
+
+        // Phase 4 — always clear the active group ride flag after save,
+        // even for local-only rides that don't hit the cloud attach path.
+        // Otherwise the next unrelated recording would inherit the id.
+        UserDefaults.standard.removeObject(forKey: "activeGroupRideID")
+        groupRideBanner = nil
 
         rideStore.load()
         resetPendingSave()
