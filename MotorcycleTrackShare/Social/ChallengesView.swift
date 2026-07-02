@@ -67,14 +67,15 @@ struct ChallengesView: View {
         if !force && cacheIsFresh { return }
         if cache.challenges.isEmpty { state = .loading }
         do {
-            async let listTask = service.activeChallenges()
-            let list = try await listTask
+            let list = try await SupabaseCircuit.shared.run(.challenges) {
+                try await ChallengeService().activeChallenges()
+            }
             cache.challenges = list
             cache.challengesLastLoaded = Date()
             state = list.isEmpty ? .empty : .loaded
-            // Progress request is decoupled from the challenge list so a
-            // slow per-user query never blocks the challenge cards from
-            // rendering.
+            // Progress query is fire-and-forget so a slow per-user
+            // query never blocks the challenge cards. Not
+            // circuit-wrapped since it's already non-blocking.
             if let uid = authService.userID {
                 Task {
                     if let progresses = try? await service.progress(userID: uid) {

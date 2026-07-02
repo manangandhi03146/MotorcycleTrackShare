@@ -7,6 +7,7 @@ struct ProfileView: View {
     @EnvironmentObject private var syncService: SyncService
 
     @State private var isLoggingOut = false
+    @State private var showSignOutConfirm = false
     @State private var showDeleteAccountConfirm = false
     @State private var isDeleting = false
     @State private var showDeleteError = false
@@ -97,7 +98,12 @@ struct ProfileView: View {
                         isLoading: isLoggingOut,
                         isDestructive: true
                     ) {
-                        Task { await logOut() }
+                        // Sign-out is reversible in the sense that you
+                        // can sign back in, but pending cloud uploads
+                        // stall until you do. A quick confirmation
+                        // catches the tap-through case (e.g., muscle
+                        // memory from another app).
+                        showSignOutConfirm = true
                     }
 
                     Button {
@@ -146,6 +152,16 @@ struct ProfileView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This will permanently delete all your rides, bikes, and account data. This cannot be undone.")
+        }
+        .confirmationDialog("Sign out of RaceLine?",
+                            isPresented: $showSignOutConfirm,
+                            titleVisibility: .visible) {
+            Button("Sign Out", role: .destructive) {
+                Task { await logOut() }
+            }
+            Button("Stay Signed In", role: .cancel) { }
+        } message: {
+            Text("You'll need to sign back in to sync new rides to the cloud. Pending uploads will wait until you return.")
         }
         .alert("Delete Failed", isPresented: $showDeleteError) {
             Button("OK", role: .cancel) { }

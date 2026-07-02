@@ -60,25 +60,39 @@ struct ContentView: View {
     @State private var showRideDayPicker        = false
     @State private var scrollTargetRideID: UUID?
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         Group {
-            if selectedTab == .ride {
-                rideRecordingView
-            } else if selectedTab == .garage {
-                GarageView(garageStore: garageStore, catalogService: motorcycleCatalog)
-                    .environmentObject(rideStore)
-                    .environmentObject(maintenanceStore)
-            } else if selectedTab == .social {
-                SocialHubView()
-            } else if selectedTab == .profile {
-                NavigationStack {
-                    ProfileView()
-                        .environmentObject(rideStore)
-                        .environmentObject(syncService)
+            // Wrapped in an outer container so the transition applies
+            // to whichever branch is currently in the view hierarchy.
+            // Each branch is tagged with `.id(selectedTab)` so SwiftUI
+            // treats a swap as a remove-and-insert (which fires the
+            // transition) rather than an in-place mutation.
+            ZStack {
+                Group {
+                    if selectedTab == .ride {
+                        rideRecordingView
+                    } else if selectedTab == .garage {
+                        GarageView(garageStore: garageStore, catalogService: motorcycleCatalog)
+                            .environmentObject(rideStore)
+                            .environmentObject(maintenanceStore)
+                    } else if selectedTab == .social {
+                        SocialHubView()
+                    } else if selectedTab == .profile {
+                        NavigationStack {
+                            ProfileView()
+                                .environmentObject(rideStore)
+                                .environmentObject(syncService)
+                        }
+                    } else {
+                        calendarView
+                    }
                 }
-            } else {
-                calendarView
+                .id(selectedTab)
+                .transition(NavTransition.tabSwap(reduceMotion: reduceMotion))
             }
+            .animation(reduceMotion ? nil : NavTransition.animation, value: selectedTab)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             bottomNavigationBar
@@ -953,6 +967,14 @@ private struct RideDetailScreen: View {
     @State private var showExportFailedAlert = false
     @State private var showingShareCover    = false
     @State private var shareInitialRideID: UUID?
+
+    /// Ride name used in destructive dialogs. Falls back to a
+    /// neutral phrase when the ride hasn't been named yet.
+    private var rideNameForDialog: String {
+        let trimmed = (draftName.isEmpty ? ride.name : draftName)
+            .trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? "this ride" : trimmed
+    }
     @State private var showAnalyzeSheet     = false
     @State private var showExportFormatDialog = false
     @State private var showShareOptionsDialog = false
@@ -1213,15 +1235,17 @@ private struct RideDetailScreen: View {
             }
             .ignoresSafeArea()
         }
-        .alert("Delete this ride?", isPresented: $showDeleteConfirm) {
-            Button("Delete", role: .destructive) {
+        .alert("Delete \(rideNameForDialog)?", isPresented: $showDeleteConfirm) {
+            Button("Delete Ride", role: .destructive) {
                 switch onDelete() {
                 case .success: onClose()
                 case .notFound, .deleteFailed: showDeleteFailedAlert = true
                 }
             }
             Button("Cancel", role: .cancel) { }
-        } message: { Text("This cannot be undone.") }
+        } message: {
+            Text("This permanently removes \"\(rideNameForDialog)\" and its telemetry. This cannot be undone.")
+        }
         .alert("Could not delete ride", isPresented: $showDeleteFailedAlert) { Button("OK", role: .cancel) { } }
             message: { Text("Please try again.") }
         .alert("Could not save photo", isPresented: $showPhotoSaveFailedAlert) { Button("OK", role: .cancel) { } }

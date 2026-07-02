@@ -21,7 +21,13 @@ struct SharedRouteDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if loading {
-                    LoadingBlock(message: "Loading route…").padding(.top, 40)
+                    // Skeleton mirrors the loaded layout so hero + map +
+                    // meta don't pop into a blank ScrollView. Keeps the
+                    // header pinned and the eventual real content lands
+                    // in the same place the placeholder occupied.
+                    heroSkeleton
+                    mapSkeleton
+                    metaSkeleton
                 } else if let route {
                     hero(route: route)
                     if !route.routePoints.isEmpty {
@@ -78,16 +84,17 @@ struct SharedRouteDetailView: View {
 
     private var authorRow: some View {
         HStack(spacing: 10) {
-            ZStack {
-                Circle().fill(Color.appAccent.opacity(0.15)).frame(width: 34, height: 34)
-                Image(systemName: "person.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.appAccent)
-            }
+            // Fixed-frame avatar bubble reserves its space even before
+            // the profile fetch finishes, so the name/date column
+            // doesn't slide horizontally when the image loads.
+            ProfileAvatarBubble(profile: author, size: 34)
             VStack(alignment: .leading, spacing: 2) {
                 Text(authorDisplayName)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color.textPrimary)
+                    .lineLimit(1)
+                    .redacted(reason: author == nil ? .placeholder : [])
+                    .frame(minHeight: 18, alignment: .leading)
                 if let route {
                     Text(route.createdAt, style: .relative)
                         .font(.caption)
@@ -124,6 +131,73 @@ struct SharedRouteDetailView: View {
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .minimalCard()
+    }
+
+    // MARK: - Skeletons
+    //
+    // These stand-ins occupy the same height and rough shape as the
+    // real hero + map + meta cards. Without them the ScrollView starts
+    // with a tiny "Loading route…" pill and then jumps down ~500pt
+    // when the response lands.
+
+    private var heroSkeleton: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color.appSurface2)
+                .frame(width: 100, height: 12)
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.appSurface2)
+                .frame(height: 28)
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color.appSurface2)
+                .frame(width: 220, height: 14)
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(Color.appSurface2)
+                    .frame(width: 34, height: 34)
+                VStack(alignment: .leading, spacing: 4) {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.appSurface2)
+                        .frame(width: 120, height: 12)
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.appSurface2)
+                        .frame(width: 80, height: 10)
+                }
+                Spacer()
+            }
+            .padding(.top, 4)
+        }
+        .minimalCard()
+        .redacted(reason: .placeholder)
+    }
+
+    private var mapSkeleton: some View {
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .fill(Color.appSurface2)
+            .frame(height: 260)
+            .overlay(
+                ProgressView()
+                    .tint(Color.appAccent)
+            )
+            .minimalCard()
+    }
+
+    private var metaSkeleton: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(0..<3, id: \.self) { _ in
+                HStack {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.appSurface2)
+                        .frame(width: 80, height: 12)
+                    Spacer()
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.appSurface2)
+                        .frame(width: 60, height: 12)
+                }
+            }
+        }
+        .minimalCard()
+        .redacted(reason: .placeholder)
     }
 
     private var emptyRouteCard: some View {

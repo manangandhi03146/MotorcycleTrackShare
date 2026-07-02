@@ -29,8 +29,13 @@ final class SocialHubCache: ObservableObject {
 struct SocialHubView: View {
     @EnvironmentObject private var authService: AuthService
     @StateObject private var cache = SocialHubCache()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var selection: SocialSegment = .feed
+    /// -1 / 0 / +1 depending on whether the newly-selected segment is
+    /// to the left, same as, or to the right of the previous one. Feeds
+    /// into `NavTransition.segmentSwap(direction:)`.
+    @State private var swipeDirection: Int = 0
 
     enum SocialSegment: String, CaseIterable, Identifiable {
         case feed, groups, challenges, riders
@@ -52,16 +57,29 @@ struct SocialHubView: View {
                     .padding(.horizontal, 12)
                     .padding(.top, 8)
 
-                Group {
-                    switch selection {
-                    case .feed:       ActivityFeedTab()
-                    case .groups:     GroupsTab()
-                    case .challenges: ChallengesTab()
-                    case .riders:     RidersTab()
+                ZStack {
+                    Group {
+                        switch selection {
+                        case .feed:       ActivityFeedTab()
+                        case .groups:     GroupsTab()
+                        case .challenges: ChallengesTab()
+                        case .riders:     RidersTab()
+                        }
                     }
+                    .id(selection)
+                    // Directional slide reinforces the spatial layout
+                    // of the segment bar — moving right in the bar
+                    // slides content in from the right. Cross-fade
+                    // fallback for Reduce Motion.
+                    .transition(NavTransition.segmentSwap(
+                        direction: swipeDirection,
+                        reduceMotion: reduceMotion
+                    ))
                 }
                 .environmentObject(cache)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+                .animation(reduceMotion ? nil : NavTransition.animation, value: selection)
             }
             .safeAreaInset(edge: .top, spacing: 0) { header }
             .background(Color.appBg)
@@ -91,7 +109,13 @@ struct SocialHubView: View {
             ForEach(SocialSegment.allCases) { seg in
                 let isSelected = selection == seg
                 Button {
-                    withAnimation(.easeOut(duration: 0.15)) { selection = seg }
+                    // Compute direction BEFORE mutating selection so
+                    // the transition (which reads swipeDirection) sees
+                    // the correct sign in the same animation frame.
+                    let fromIdx = SocialSegment.allCases.firstIndex(of: selection) ?? 0
+                    let toIdx   = SocialSegment.allCases.firstIndex(of: seg) ?? 0
+                    swipeDirection = toIdx > fromIdx ? 1 : (toIdx < fromIdx ? -1 : 0)
+                    selection = seg
                 } label: {
                     Text(seg.displayName)
                         .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
@@ -107,6 +131,9 @@ struct SocialHubView: View {
             }
             Spacer()
         }
+        // The pill background swap animates independently so the
+        // selection indicator glides even while content is sliding.
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: selection)
     }
 }
 
@@ -216,20 +243,23 @@ struct ActivityFeedTab: View {
         if !force && cacheIsFresh { return }
         state = cache.feedEvents.isEmpty ? .loading : .refreshing
         do {
-            async let listTask = feedService.feed(limit: 40)
-            let list = try await listTask
+            // Circuit-wrapped: fast-fails without hitting the network
+            // if the feed endpoint has been broken. Also enforces a
+            // 10s per-request timeout so users never sit on a 60s
+            // URLSession default.
+            let list = try await SupabaseCircuit.shared.run(.feed) {
+                try await ActivityFeedService().feed(limit: 40)
+            }
             cache.feedEvents = list
             cache.feedLastLoaded = Date()
             state = list.isEmpty ? .empty : .loaded
-            // Fire-and-forget the profile fetch so a slow profiles query
-            // doesn't hold the feed content off screen. The cached
-            // profiles map fills in as they arrive.
+            // Profile fetch already runs as fire-and-forget so a slow
+            // avatars query can't stall the feed content that's
+            // already visible above.
             Task { await loadActorProfiles(for: list) }
         } catch {
             guard !isCancellationError(error) else { return }
             errorMessage = userFacingSupabaseError(error, feature: "feed")
-            // Preserve existing content — only surface the error card
-            // when we have nothing at all to show.
             if cache.feedEvents.isEmpty {
                 state = .error
             } else {
@@ -295,9 +325,17 @@ private struct FeedRow: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
+                    // Reserve a fixed line height so late-arriving actor
+                    // profiles ("A rider" → "Manan Gandhi") don't jump
+                    // the row's vertical rhythm. The .redacted placeholder
+                    // fills the same 13pt line so the row height stays
+                    // constant across the profile fetch.
                     Text(actorLine)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.textPrimary)
+                        .lineLimit(1)
+                        .redacted(reason: actor == nil ? .placeholder : [])
+                        .frame(minHeight: 16, alignment: .leading)
                     if event.kind == .sharedRoutePosted || event.kind == .groupRideCreated {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 10, weight: .semibold))
@@ -496,9 +534,12 @@ struct RidersTab: View {
         if !force && cacheIsFresh { return }
         if cache.mutuals.isEmpty { state = .loading }
         do {
-            async let mutualIDsTask   = followService.mutuals(userID: me)
-            async let followingIDTask = followService.following(userID: me)
-            let (mutualIDs, followingIDs) = try await (mutualIDsTask, followingIDTask)
+            let (mutualIDs, followingIDs) = try await SupabaseCircuit.shared.run(.mutuals) {
+                let svc = FollowService()
+                async let mIDs = svc.mutuals(userID: me)
+                async let fIDs = svc.following(userID: me)
+                return try await (mIDs, fIDs)
+            }
             cache.followingIDs = Set(followingIDs)
             if mutualIDs.isEmpty {
                 cache.mutuals = []
@@ -521,6 +562,42 @@ struct RidersTab: View {
     }
 }
 
+// MARK: - Recent searches store
+
+/// Persists the last-N rider search queries in UserDefaults so the sheet
+/// can show them as taps when nothing is currently typed. Scoped by
+/// signed-in user so switching accounts doesn't spill history.
+enum RecentRiderSearches {
+    private static let key = "recentRiderSearches"
+    private static let maxItems = 8
+
+    private static func map() -> [String: [String]] {
+        (UserDefaults.standard.dictionary(forKey: key) as? [String: [String]]) ?? [:]
+    }
+
+    static func list(for userID: UUID) -> [String] {
+        map()[userID.uuidString] ?? []
+    }
+
+    static func record(_ term: String, for userID: UUID) {
+        let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 2 else { return }
+        var current = map()
+        var forUser = current[userID.uuidString] ?? []
+        forUser.removeAll { $0.caseInsensitiveCompare(trimmed) == .orderedSame }
+        forUser.insert(trimmed, at: 0)
+        if forUser.count > maxItems { forUser = Array(forUser.prefix(maxItems)) }
+        current[userID.uuidString] = forUser
+        UserDefaults.standard.set(current, forKey: key)
+    }
+
+    static func clear(for userID: UUID) {
+        var current = map()
+        current.removeValue(forKey: userID.uuidString)
+        UserDefaults.standard.set(current, forKey: key)
+    }
+}
+
 // MARK: - Add Riders sheet (search + follow)
 
 /// Presented from the Riders tab plus-button. Lets the user search public
@@ -534,9 +611,15 @@ struct AddRidersSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var query: String = ""
+    @State private var committedTerm: String = ""
     @State private var results: [SocialProfile] = []
     @State private var searching = false
     @State private var errorMessage: String?
+    @State private var recents: [String] = []
+    @State private var debounceTask: Task<Void, Never>?
+    @State private var searchGeneration: Int = 0
+    @State private var showClearRecentsConfirm = false
+    @FocusState private var searchFocused: Bool
 
     private let profileService = SocialProfileService()
     private let followService  = FollowService()
@@ -566,28 +649,7 @@ struct AddRidersSheet: View {
                                 .padding()
                         }
 
-                        if searching {
-                            LoadingBlock(message: "Searching…")
-                                .padding(.top, 20)
-                        } else if !query.trimmingCharacters(in: .whitespaces).isEmpty && results.isEmpty {
-                            EmptyStateView(
-                                icon: "magnifyingglass",
-                                title: "No riders found",
-                                message: "Only riders with a public profile show up in search."
-                            )
-                            .padding(.top, 20)
-                        } else if results.isEmpty {
-                            EmptyStateView(
-                                icon: "person.crop.circle.badge.plus",
-                                title: "Search for riders",
-                                message: "Type at least 2 letters of a username or display name to find riders to follow."
-                            )
-                            .padding(.top, 20)
-                        } else {
-                            ForEach(results) { profile in
-                                riderRow(profile)
-                            }
-                        }
+                        contentSection
                     }
                     .padding(.horizontal, 20)
                     .padding(.top, 12)
@@ -595,55 +657,259 @@ struct AddRidersSheet: View {
                 }
             }
         }
+        .onAppear {
+            recents = authService.userID.map { RecentRiderSearches.list(for: $0) } ?? []
+            // Auto-focus keeps the keyboard up so the user can start
+            // typing without an extra tap. Feels like the search sheet
+            // "means it" — the input is the primary action.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                searchFocused = true
+            }
+        }
+        .onDisappear {
+            debounceTask?.cancel()
+        }
+    }
+
+    // MARK: - Content
+
+    @ViewBuilder
+    private var contentSection: some View {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+
+        if searching && results.isEmpty {
+            // Only show the loading pill when we're searching from a
+            // cold state. If the user is refining an existing query
+            // the previous rows stay on screen for continuity.
+            LoadingBlock(message: "Searching…")
+                .padding(.top, 20)
+        } else if trimmed.isEmpty {
+            // Empty query → surface recent searches (if any) and the
+            // "start typing" hint. Recents double as suggestions and
+            // give the user something to tap.
+            if !recents.isEmpty {
+                recentsSection
+            } else {
+                EmptyStateView(
+                    icon: "person.crop.circle.badge.plus",
+                    title: "Search for riders",
+                    message: "Start typing a username or name to find riders to follow."
+                )
+                .padding(.top, 20)
+            }
+        } else if results.isEmpty && !searching {
+            noResultsSection(for: trimmed)
+        } else {
+            ForEach(results) { profile in
+                riderRow(profile, matchTerm: trimmed)
+            }
+            if searching {
+                // Small trailing spinner while a refined query flies —
+                // keeps existing results scannable, signals "still
+                // working".
+                HStack(spacing: 8) {
+                    ProgressView().scaleEffect(0.7)
+                    Text("Refining…")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.textSecondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 6)
+            }
+        }
+    }
+
+    private var recentsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("RECENT SEARCHES")
+                    .font(.system(size: 11, weight: .semibold))
+                    .kerning(0.6)
+                    .foregroundStyle(Color.textGhost)
+                Spacer()
+                Button("Clear") {
+                    showClearRecentsConfirm = true
+                }
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.appAccent)
+                .confirmationDialog("Clear recent searches?",
+                                    isPresented: $showClearRecentsConfirm,
+                                    titleVisibility: .visible) {
+                    Button("Clear \(recents.count) recent search\(recents.count == 1 ? "" : "es")",
+                           role: .destructive) {
+                        if let uid = authService.userID {
+                            RecentRiderSearches.clear(for: uid)
+                            recents = []
+                        }
+                    }
+                    Button("Keep", role: .cancel) { }
+                } message: {
+                    Text("Your recent searches only live on this device. They aren't shared with anyone.")
+                }
+            }
+            ForEach(recents, id: \.self) { term in
+                Button {
+                    query = term
+                    triggerSearch(for: term, debounce: false)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .foregroundStyle(Color.textSecondary)
+                        Text(term)
+                            .foregroundStyle(Color.textPrimary)
+                        Spacer()
+                        Image(systemName: "arrow.up.left")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.textTertiary)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(Color.appSurface2)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.top, 12)
+    }
+
+    private func noResultsSection(for term: String) -> some View {
+        VStack(spacing: 14) {
+            EmptyStateView(
+                icon: "magnifyingglass",
+                title: "No riders found for \"\(term)\"",
+                message: "Try just the first few letters, or check the spelling. Only riders with a public profile show up here."
+            )
+            if !recents.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("TRY A RECENT SEARCH")
+                        .font(.system(size: 11, weight: .semibold))
+                        .kerning(0.6)
+                        .foregroundStyle(Color.textGhost)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    ForEach(recents.prefix(3), id: \.self) { r in
+                        Button {
+                            query = r
+                            triggerSearch(for: r, debounce: false)
+                        } label: {
+                            Text(r)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Color.appAccent)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(Color.appAccent.opacity(0.12))
+                                .clipShape(Capsule())
+                                .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .padding(.top, 20)
     }
 
     private var searchField: some View {
-        HStack {
+        HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(Color.textSecondary)
+                .font(.system(size: 16, weight: .semibold))
             TextField("Search by username or name", text: $query)
                 .textFieldStyle(.plain)
                 .foregroundStyle(Color.textPrimary)
-                .autocorrectionDisabled()
+                .font(.system(size: 17))
                 .textInputAutocapitalization(.never)
-                .onSubmit { Task { await runSearch() } }
-            if !query.isEmpty {
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .focused($searchFocused)
+                .onSubmit {
+                    // Commit and record the search immediately on
+                    // Return so the query lands in recents even if the
+                    // debounce hadn't fired yet.
+                    triggerSearch(for: query, debounce: false)
+                }
+                .onChange(of: query) { _, newValue in
+                    triggerSearch(for: newValue, debounce: true)
+                }
+            if searching {
+                ProgressView().scaleEffect(0.8)
+            } else if !query.isEmpty {
                 Button {
                     query = ""
                     results = []
+                    errorMessage = nil
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(Color.textGhost)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
         .background(Color.appSurface2)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .onChange(of: query) { _, _ in
-            Task { await runSearch() }
-        }
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
-    private func riderRow(_ profile: SocialProfile) -> some View {
+    private func riderRow(_ profile: SocialProfile, matchTerm: String) -> some View {
         HStack(spacing: 12) {
             ProfileAvatarBubble(profile: profile, size: 44)
             VStack(alignment: .leading, spacing: 4) {
-                Text(profile.displayName ?? profile.username ?? "Rider")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.textPrimary)
+                highlighted(
+                    profile.displayName ?? profile.username ?? "Rider",
+                    term: matchTerm,
+                    baseFont: .system(size: 15, weight: .semibold),
+                    baseColor: Color.textPrimary
+                )
                 if let username = profile.username {
-                    Text("@\(username)")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.textSecondary)
+                    highlighted(
+                        "@\(username)",
+                        term: matchTerm,
+                        baseFont: .system(size: 12),
+                        baseColor: Color.textSecondary
+                    )
                 }
             }
             Spacer()
             followButton(profile)
         }
         .minimalCard()
+    }
+
+    /// Renders `text` with occurrences of `term` bolded + accent-colored.
+    /// Case-insensitive; falls back to plain text when `term` is short or
+    /// not found. Uses AttributedString so we get one Text view instead
+    /// of a fragile HStack of substrings.
+    private func highlighted(_ text: String, term: String,
+                             baseFont: Font, baseColor: Color) -> some View {
+        Text(Self.highlightAttributed(text: text, term: term))
+            .font(baseFont)
+            .foregroundStyle(baseColor)
+            .lineLimit(1)
+    }
+
+    private static func highlightAttributed(text: String, term: String) -> AttributedString {
+        var attributed = AttributedString(text)
+        let trimmedTerm = term.trimmingCharacters(in: .whitespaces)
+        guard trimmedTerm.count >= 2 else { return attributed }
+        // Highlight each whitespace-separated token independently so
+        // "manan gandhi" bolds both words in the result.
+        for token in trimmedTerm.split(whereSeparator: { $0.isWhitespace }) {
+            let needle = String(token).lowercased()
+            guard needle.count >= 2 else { continue }
+            let lowerText = text.lowercased()
+            var searchStart = lowerText.startIndex
+            while let range = lowerText.range(of: needle, range: searchStart..<lowerText.endIndex) {
+                if let attrRange = Range(range, in: attributed) {
+                    attributed[attrRange].foregroundColor = Color.appAccent
+                    attributed[attrRange].inlinePresentationIntent = .stronglyEmphasized
+                }
+                searchStart = range.upperBound
+            }
+        }
+        return attributed
     }
 
     @ViewBuilder
@@ -674,36 +940,116 @@ struct AddRidersSheet: View {
         }
     }
 
-    private func runSearch() async {
-        let trimmed = query.trimmingCharacters(in: .whitespaces)
-        guard trimmed.count >= 2 else {
+    /// Schedules a search for `term`. `debounce = true` (the typing path)
+    /// waits ~280ms before hitting the server so a fast typist doesn't
+    /// fire off a dozen queries. `debounce = false` (Return key or a
+    /// tapped recent) skips the wait and runs immediately. Any pending
+    /// or in-flight prior request is cancelled so results always match
+    /// the latest committed query — no out-of-order overwrite.
+    private func triggerSearch(for term: String, debounce: Bool) {
+        debounceTask?.cancel()
+        let trimmed = term.trimmingCharacters(in: .whitespaces)
+        errorMessage = nil
+
+        if trimmed.count < 2 {
             results = []
             searching = false
+            committedTerm = ""
             return
         }
+
+        searchGeneration += 1
+        let myGen = searchGeneration
+        committedTerm = trimmed
+
+        debounceTask = Task { @MainActor in
+            if debounce {
+                try? await Task.sleep(nanoseconds: 280_000_000)
+                if Task.isCancelled { return }
+            }
+            await performSearch(term: trimmed, generation: myGen)
+        }
+    }
+
+    /// Actual network hit. `generation` guards against races: if the
+    /// user typed further while this request was in flight, `myGen`
+    /// won't match the current `searchGeneration` and we drop the
+    /// stale response on the floor.
+    private func performSearch(term: String, generation: Int) async {
         searching = true
-        errorMessage = nil
-        defer { searching = false }
+        defer {
+            if generation == searchGeneration { searching = false }
+        }
         do {
-            results = try await profileService.searchPublic(query: trimmed)
+            let fetched = try await SupabaseCircuit.shared.run(.search) {
+                try await SocialProfileService().searchPublic(query: term)
+            }
+            guard generation == searchGeneration else { return }
+            // Rank exact-prefix hits above substring hits so what the
+            // user is literally typing shows first. Case-insensitive.
+            let lower = term.lowercased()
+            results = fetched.sorted { a, b in
+                score(profile: a, prefix: lower) > score(profile: b, prefix: lower)
+            }
+            // Record the term as "recent" only after we know it produced
+            // results — no point suggesting a search that goes nowhere.
+            if !fetched.isEmpty, let uid = authService.userID {
+                RecentRiderSearches.record(term, for: uid)
+                recents = RecentRiderSearches.list(for: uid)
+            }
         } catch {
+            guard generation == searchGeneration else { return }
+            if isCancellationError(error) { return }
             errorMessage = userFacingSupabaseError(error, feature: "search")
             results = []
         }
     }
 
+    /// Higher score = should appear higher. Simple relevance ordering:
+    /// username prefix > display-name prefix > any-substring.
+    private func score(profile: SocialProfile, prefix: String) -> Int {
+        let username = profile.username?.lowercased() ?? ""
+        let display  = profile.displayName?.lowercased() ?? ""
+        if username == prefix { return 100 }
+        if username.hasPrefix(prefix) { return 60 }
+        if display.hasPrefix(prefix)  { return 40 }
+        if username.contains(prefix)  { return 20 }
+        if display.contains(prefix)   { return 10 }
+        return 0
+    }
+
+    /// Optimistic follow toggle: flips the local set immediately so the
+    /// pill visibly updates on tap, then fires the request in the
+    /// background. If the server rejects, we roll the local set back
+    /// and surface a message so the user knows why the pill flipped
+    /// back — silent rollback would be worse than the original delay.
     private func toggleFollow(_ profile: SocialProfile) async {
         guard let me = authService.userID else { return }
+        let wasFollowing = followingIDs.contains(profile.id)
+
+        // 1. Optimistic UI flip.
+        if wasFollowing {
+            followingIDs.remove(profile.id)
+        } else {
+            followingIDs.insert(profile.id)
+        }
+        errorMessage = nil
+
+        // 2. Server reconcile — rollback on failure with a visible
+        //    message so the pill flipping back isn't mysterious.
         do {
-            if followingIDs.contains(profile.id) {
+            if wasFollowing {
                 try await followService.unfollow(followerID: me, followeeID: profile.id)
-                followingIDs.remove(profile.id)
             } else {
                 try await followService.follow(followerID: me, followeeID: profile.id)
-                followingIDs.insert(profile.id)
             }
         } catch {
-            errorMessage = "Couldn't update follow. Try again."
+            if wasFollowing {
+                followingIDs.insert(profile.id)
+            } else {
+                followingIDs.remove(profile.id)
+            }
+            errorMessage = "Couldn't \(wasFollowing ? "unfollow" : "follow") \(profile.displayName ?? profile.username ?? "that rider"). Try again."
         }
     }
 }

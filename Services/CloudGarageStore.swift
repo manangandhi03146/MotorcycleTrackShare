@@ -28,6 +28,36 @@ struct CloudGarageStore {
         return returned.id
     }
 
+    // MARK: - Bulk upsert (used by "Re-sync All Data")
+
+    /// Batched variant of `syncBike` for the DB row only. Photos are
+    /// left to the caller so they can be uploaded concurrently while
+    /// the row upsert is one round trip regardless of bike count.
+    /// Returns a `local_id → remote_id` map so the caller can update
+    /// `updateCloudInfo` per bike. Chunks at 100 rows to stay well
+    /// under PostgREST's default 1MB body limit.
+    func syncBikesBulk(_ bikes: [GarageBike], userID: UUID) async throws -> [UUID: UUID] {
+        guard !bikes.isEmpty else { return [:] }
+
+        struct Returned: Decodable { let id: UUID; let localId: UUID
+            enum CodingKeys: String, CodingKey { case id; case localId = "local_id" }
+        }
+
+        var remoteByLocal: [UUID: UUID] = [:]
+        let chunks = bikes.chunked(into: 100)
+        for chunk in chunks {
+            let payloads = chunk.map { BikeUpsertPayload(bike: $0, userID: userID) }
+            let returned: [Returned] = try await client
+                .from("bikes")
+                .upsert(payloads, onConflict: "user_id,local_id")
+                .select("id, local_id")
+                .execute()
+                .value
+            for row in returned { remoteByLocal[row.localId] = row.id }
+        }
+        return remoteByLocal
+    }
+
     // MARK: - Photo helpers
 
     func createSignedPhotoURL(userID: UUID, bikeID: UUID) async throws -> URL {
@@ -47,6 +77,19 @@ struct CloudGarageStore {
 
     func photoStoragePath(userID: UUID, bikeID: UUID) -> String {
         "\(userID.uuidString)/bikes/\(bikeID.uuidString)/photo.jpg"
+    }
+}
+
+// MARK: - Batching helper
+
+extension Array {
+    /// Splits into fixed-size chunks. Used by the cloud stores to keep
+    /// individual PostgREST bodies below the ~1MB limit and Postgres
+    /// statements below the reasonable-lock window.
+    func chunked(into size: Int) -> [[Element]] {
+        stride(from: 0, to: count, by: size).map {
+            Array(self[$0..<Swift.min($0 + size, count)])
+        }
     }
 }
 

@@ -102,9 +102,13 @@ struct MaintenanceRecordRow: View {
             Button("Edit") { onEdit() }
             Button("Delete", role: .destructive) { showDeleteConfirm = true }
         }
-        .confirmationDialog("Delete this record?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
-            Button("Delete", role: .destructive) { onDelete() }
-            Button("Cancel", role: .cancel) {}
+        .confirmationDialog("Delete \(record.title)?",
+                            isPresented: $showDeleteConfirm,
+                            titleVisibility: .visible) {
+            Button("Delete Record", role: .destructive) { onDelete() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This removes the \"\(record.title)\" record and its receipt photo. This can't be undone.")
         }
     }
 

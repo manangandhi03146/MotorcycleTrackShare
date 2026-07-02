@@ -20,8 +20,10 @@ struct PublicProfileView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if loading {
-                    LoadingBlock(message: "Loading profile…")
-                        .padding(.top, 40)
+                    // Skeleton mirrors the hero card so the follow row
+                    // doesn't slide down into place when the profile
+                    // fetch resolves.
+                    profileHeroSkeleton
                 } else if let profile {
                     if profile.isPublic {
                         heroCard(profile)
@@ -60,6 +62,25 @@ struct PublicProfileView: View {
         .toolbarBackground(Color.appSurface, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .task { await reload() }
+    }
+
+    private var profileHeroSkeleton: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Circle()
+                .fill(Color.appSurface2)
+                .frame(width: 60, height: 60)
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.appSurface2)
+                .frame(width: 180, height: 26)
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color.appSurface2)
+                .frame(width: 90, height: 14)
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color.appSurface2)
+                .frame(width: 220, height: 12)
+        }
+        .minimalCard()
+        .redacted(reason: .placeholder)
     }
 
     private func heroCard(_ profile: SocialProfile) -> some View {
@@ -134,18 +155,26 @@ struct PublicProfileView: View {
         }
     }
 
+    /// Optimistic follow toggle. Flips the pill label instantly on
+    /// tap; on server rejection we roll `isFollowing` back to its
+    /// prior state and surface a message so the label reverting isn't
+    /// mysterious.
     private func toggleFollow(_ targetID: UUID) async {
         guard let me = authService.userID else { return }
+        let previous = isFollowing
+
+        isFollowing.toggle()
+        errorMessage = nil
+
         do {
-            if isFollowing {
+            if previous {
                 try await followService.unfollow(followerID: me, followeeID: targetID)
-                isFollowing = false
             } else {
                 try await followService.follow(followerID: me, followeeID: targetID)
-                isFollowing = true
             }
         } catch {
-            errorMessage = "Couldn't update follow."
+            isFollowing = previous
+            errorMessage = "Couldn't \(previous ? "unfollow" : "follow"). Check your connection and try again."
         }
     }
 }

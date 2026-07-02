@@ -1137,8 +1137,8 @@ private struct EditBikeSheet: View {
         } message: {
             Text("Please try again.")
         }
-        .alert("Delete this bike?", isPresented: $showDeleteConfirm) {
-            Button("Delete", role: .destructive) {
+        .alert("Delete \(bike.title)?", isPresented: $showDeleteConfirm) {
+            Button("Delete Bike", role: .destructive) {
                 switch onDelete() {
                 case .success: break // parent closes via onSaved chain
                 case .notFound, .deleteFailed:
@@ -1147,7 +1147,7 @@ private struct EditBikeSheet: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This action cannot be undone.")
+            Text("This permanently removes \"\(bike.title)\" and its maintenance history. This action cannot be undone.")
         }
         .alert("Could not delete bike", isPresented: $showDeleteFailedAlert) {
             Button("OK", role: .cancel) { }

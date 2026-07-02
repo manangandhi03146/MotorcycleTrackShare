@@ -140,17 +140,52 @@ struct SocialProfileService {
             .getPublicURL(path: path)
     }
 
-    /// Case-insensitive search by username/display_name for public profiles.
+    /// Case-insensitive search by username / display_name for public
+    /// profiles. Splits the query on whitespace so "manan gandhi"
+    /// matches display names that contain both tokens (in either
+    /// column) — a full-word first+last search still works even
+    /// though we don't have a fuzzy Postgres extension enabled.
     /// Returns at most 20 rows.
     func searchPublic(query: String) async throws -> [SocialProfile] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 2 else { return [] }
-        let pattern = "%\(trimmed)%"
-        return try await client
+
+        // Escape PostgREST OR-filter metachars so a % or comma the
+        // user typed doesn't blow up the query. Only sanitize what
+        // PostgREST syntax cares about.
+        func escape(_ raw: String) -> String {
+            raw
+                .replacingOccurrences(of: ",", with: " ")
+                .replacingOccurrences(of: "*", with: " ")
+                .replacingOccurrences(of: "(", with: " ")
+                .replacingOccurrences(of: ")", with: " ")
+        }
+
+        let tokens = trimmed
+            .split(whereSeparator: { $0.isWhitespace })
+            .map { escape(String($0)) }
+            .filter { !$0.isEmpty }
+
+        // Base filter: any token appears in either column. Loose enough
+        // for typos that don't drop the leading letters, tight enough
+        // that "abc" doesn't return the whole table.
+        let firstToken = tokens.first ?? escape(trimmed)
+        let firstPattern = "%\(firstToken)%"
+        var request = client
             .from(SocialTable.profiles)
             .select("id, username, display_name, bio, avatar_path, is_public, show_bikes, show_ride_stats")
             .eq("is_public", value: true)
-            .or("username.ilike.\(pattern),display_name.ilike.\(pattern)")
+            .or("username.ilike.\(firstPattern),display_name.ilike.\(firstPattern)")
+
+        // Additional tokens narrow via ANDed OR-filters so "sport crew"
+        // only matches profiles that contain both "sport" AND "crew"
+        // (in either column).
+        for extra in tokens.dropFirst() {
+            let pattern = "%\(extra)%"
+            request = request.or("username.ilike.\(pattern),display_name.ilike.\(pattern)")
+        }
+
+        return try await request
             .limit(20)
             .execute()
             .value

@@ -188,7 +188,9 @@ struct GroupsView: View {
         if !force && cacheIsFresh { return }
         if cache.groups.isEmpty { state = .loading }
         do {
-            let list = try await service.groups(forUser: uid)
+            let list = try await SupabaseCircuit.shared.run(.groups) {
+                try await GroupService().groups(forUser: uid)
+            }
             cache.groups = list
             cache.groupsLastLoaded = Date()
             state = list.isEmpty ? .empty : .loaded
@@ -471,17 +473,17 @@ struct GroupDetailView: View {
         .toolbarBackground(Color.appSurface, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .task { await reload() }
-        .alert("Leave this group?", isPresented: $showLeaveConfirm) {
-            Button("Leave", role: .destructive) { Task { await leave() } }
-            Button("Cancel", role: .cancel) { }
+        .alert("Leave \(group.name)?", isPresented: $showLeaveConfirm) {
+            Button("Leave Group", role: .destructive) { Task { await leave() } }
+            Button("Stay", role: .cancel) { }
         } message: {
             Text(leaveWarningText)
         }
-        .alert("Delete this group?", isPresented: $showDeleteConfirm) {
-            Button("Delete", role: .destructive) { Task { await deleteGroup() } }
+        .alert("Delete \(group.name)?", isPresented: $showDeleteConfirm) {
+            Button("Delete Group", role: .destructive) { Task { await deleteGroup() } }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This removes the group and all its rides for every member. This can't be undone.")
+            Text("Deleting \"\(group.name)\" removes the group and all its planned rides for every member. This can't be undone.")
         }
         .sheet(isPresented: $showCreateGroupRide) {
             CreateGroupRideSheet(groupID: group.id) { newRide in
@@ -571,14 +573,22 @@ struct GroupDetailView: View {
         HStack(spacing: 12) {
             ProfileAvatarBubble(profile: profile, size: 32)
             VStack(alignment: .leading, spacing: 2) {
+                // Fixed line height + redaction keeps the row's total
+                // height constant across the profile fetch — the
+                // display name lands where "Rider" used to sit rather
+                // than pushing the role pill around.
                 Text(memberDisplayName(for: member, profile: profile))
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color.textPrimary)
-                if let username = profile?.username, !username.isEmpty {
-                    Text("@\(username)")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.textSecondary)
-                }
+                    .lineLimit(1)
+                    .redacted(reason: profile == nil && member.userID != authService.userID ? .placeholder : [])
+                    .frame(minHeight: 17, alignment: .leading)
+                Text(profile?.username.flatMap { $0.isEmpty ? nil : "@\($0)" } ?? " ")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.textSecondary)
+                    .lineLimit(1)
+                    .redacted(reason: profile == nil ? .placeholder : [])
+                    .frame(minHeight: 14, alignment: .leading)
             }
             Spacer()
             Text(member.role.displayName)

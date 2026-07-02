@@ -328,6 +328,9 @@ struct GroupRideDetailView: View {
 
     @State private var showLiveShareWarning = false
     @State private var showDeleteConfirm = false
+    @State private var showEndRideConfirm = false
+    @State private var showCancelRideConfirm = false
+    @State private var showLeaveRideConfirm = false
     @StateObject private var liveLocation = LiveLocationSharingService()
 
     private let rideService = GroupRideService()
@@ -342,11 +345,22 @@ struct GroupRideDetailView: View {
     }
     private var isActive: Bool { ride?.status == .active }
 
+    /// Ride title used in destructive dialogs so the user always knows
+    /// which specific ride they're about to end/cancel/delete/leave.
+    private var rideTitleForDialog: String {
+        let raw = ride?.title.trimmingCharacters(in: .whitespaces) ?? ""
+        return raw.isEmpty ? "this ride" : raw
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if loading {
-                    LoadingBlock(message: "Loading ride…").padding(.top, 40)
+                    // Skeleton mirrors the loaded layout: header pill +
+                    // title, detail rows, primary action, participant
+                    // list. Prevents the full page from popping in below
+                    // a tiny loading spinner.
+                    rideDetailSkeleton
                 } else if let ride {
                     headerCard(ride)
                     detailsCard(ride)
@@ -370,11 +384,35 @@ struct GroupRideDetailView: View {
         .toolbarColorScheme(.dark, for: .navigationBar)
         .task { await reload() }
         .refreshable { await reload() }
-        .alert("Delete this ride?", isPresented: $showDeleteConfirm) {
-            Button("Delete", role: .destructive) { Task { await deleteRide() } }
+        .alert("Delete \(rideTitleForDialog)?", isPresented: $showDeleteConfirm) {
+            Button("Delete Ride", role: .destructive) { Task { await deleteRide() } }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This removes the ride from the group for everyone. This can't be undone.")
+            Text("This removes \"\(rideTitleForDialog)\" from the group for everyone. This can't be undone.")
+        }
+        .alert("End \(rideTitleForDialog)?", isPresented: $showEndRideConfirm) {
+            Button("End Ride", role: .destructive) {
+                Task { await setStatus(.completed) }
+            }
+            Button("Keep Ride Active", role: .cancel) { }
+        } message: {
+            Text("Everyone joined to \"\(rideTitleForDialog)\" will see the ride as completed. You can't reopen a completed ride.")
+        }
+        .alert("Cancel \(rideTitleForDialog)?", isPresented: $showCancelRideConfirm) {
+            Button("Cancel Ride", role: .destructive) {
+                Task { await setStatus(.cancelled) }
+            }
+            Button("Keep Ride", role: .cancel) { }
+        } message: {
+            Text("\"\(rideTitleForDialog)\" will be cancelled for everyone who joined. The ride stays visible until you delete it.")
+        }
+        .alert("Leave \(rideTitleForDialog)?", isPresented: $showLeaveRideConfirm) {
+            Button("Leave Ride", role: .destructive) {
+                Task { await toggleJoin() }
+            }
+            Button("Stay", role: .cancel) { }
+        } message: {
+            Text("You'll be removed from the participant list for \"\(rideTitleForDialog)\". You can rejoin as long as the ride is still active.")
         }
         .alert("Share your live location?", isPresented: $showLiveShareWarning) {
             Button("Share", role: .none) {
@@ -477,7 +515,13 @@ struct GroupRideDetailView: View {
             .disabled(GoogleMapsRouteService.directionsURL(for: ride) == nil)
 
             Button {
-                Task { await toggleJoin() }
+                if isJoined {
+                    // Leaving affects the participant list everyone can
+                    // see — worth a confirmation prompt naming the ride.
+                    showLeaveRideConfirm = true
+                } else {
+                    Task { await toggleJoin() }
+                }
             } label: {
                 Text(isJoined ? "Leave Ride" : "Join Ride")
                     .font(.system(size: 15, weight: .semibold))
@@ -614,7 +658,11 @@ struct GroupRideDetailView: View {
                 }
                 if ride.status == .active {
                     Button {
-                        Task { await setStatus(.completed) }
+                        // End Ride marks the group ride done for every
+                        // participant — confirm before firing so an
+                        // accidental tap on a tight button stack doesn't
+                        // close the ride mid-run.
+                        showEndRideConfirm = true
                     } label: {
                         actionLabel("End Ride", icon: "stop.fill")
                             .foregroundStyle(.white)
@@ -625,7 +673,10 @@ struct GroupRideDetailView: View {
                 }
                 if ride.status == .planned || ride.status == .active {
                     Button {
-                        Task { await setStatus(.cancelled) }
+                        // Cancelling propagates to every joined rider's
+                        // ride list — a bare tap here would be the most
+                        // destructive miss in the whole detail view.
+                        showCancelRideConfirm = true
                     } label: {
                         actionLabel("Cancel Ride", icon: "xmark")
                             .foregroundStyle(.white)
@@ -657,6 +708,77 @@ struct GroupRideDetailView: View {
         }
         .font(.system(size: 14, weight: .semibold))
         .frame(maxWidth: .infinity, minHeight: 44)
+    }
+
+    // MARK: - Skeleton (loading placeholder)
+
+    private var rideDetailSkeleton: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.appSurface2)
+                        .frame(width: 60, height: 18)
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.appSurface2)
+                        .frame(width: 80, height: 12)
+                    Spacer()
+                }
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.appSurface2)
+                    .frame(height: 26)
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.appSurface2)
+                    .frame(width: 220, height: 14)
+            }
+            .minimalCard()
+
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(0..<3, id: \.self) { _ in
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(Color.appSurface2)
+                            .frame(width: 20, height: 20)
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.appSurface2)
+                            .frame(width: 180, height: 14)
+                        Spacer()
+                    }
+                }
+            }
+            .minimalCard()
+
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.appSurface2)
+                .frame(height: 50)
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.appSurface2)
+                .frame(height: 46)
+
+            VStack(alignment: .leading, spacing: 10) {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.appSurface2)
+                    .frame(width: 140, height: 12)
+                ForEach(0..<2, id: \.self) { _ in
+                    HStack(spacing: 12) {
+                        Circle()
+                            .fill(Color.appSurface2)
+                            .frame(width: 32, height: 32)
+                        VStack(alignment: .leading, spacing: 4) {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.appSurface2)
+                                .frame(width: 120, height: 12)
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.appSurface2)
+                                .frame(width: 80, height: 10)
+                        }
+                        Spacer()
+                    }
+                }
+            }
+            .minimalCard()
+        }
+        .redacted(reason: .placeholder)
     }
 
     private var safetyNote: some View {
@@ -733,32 +855,120 @@ struct GroupRideDetailView: View {
         }
     }
 
+    /// Optimistic RSVP toggle. Instead of waiting for the server and
+    /// then re-fetching the whole participant list, we mutate the
+    /// local `participants` array immediately so the button label,
+    /// participant count, and "You" row all update on tap. The server
+    /// call then reconciles in the background. On failure we restore
+    /// the previous snapshot and show an error.
     private func toggleJoin() async {
         guard let uid = authService.userID else { return }
+        let previous = participants
+        let wasJoined = isJoined
         actionInFlight = true
         defer { actionInFlight = false }
+
+        // 1. Optimistic local mutation.
+        if wasJoined {
+            participants.removeAll { $0.userID == uid }
+            liveLocation.stop()
+        } else {
+            let now = Date()
+            participants.append(GroupRideParticipant(
+                groupRideID: rideID,
+                userID: uid,
+                status: .joined,
+                joinedAt: now,
+                updatedAt: now
+            ))
+        }
+        errorMessage = nil
+
+        // 2. Server reconcile.
         do {
-            if isJoined {
+            if wasJoined {
                 try await rideService.leave(rideID: rideID, userID: uid)
-                liveLocation.stop()
             } else {
                 try await rideService.join(rideID: rideID, userID: uid)
             }
-            await reload()
+            // On success, quietly refetch participants so any
+            // concurrent joins/leaves from other riders show up.
+            // Silent — no loading state — so the reconcile is
+            // invisible on the happy path.
+            if let latest = try? await rideService.participants(rideID: rideID) {
+                participants = latest
+                await loadParticipantProfiles(latest)
+            }
         } catch {
-            errorMessage = "Couldn't update your RSVP."
+            // 3. Rollback + visible message so the button snapping
+            //    back isn't mysterious.
+            participants = previous
+            errorMessage = wasJoined
+                ? "Couldn't leave this ride. Check your connection."
+                : "Couldn't join this ride. Check your connection."
         }
     }
 
+    /// Optimistic status change. The pill/buttons/creator-controls
+    /// all render off `ride.status`, so we mutate the local `ride`
+    /// with the new status immediately and let the network catch up.
+    /// This is what makes "Start Ride" feel instant — the pill flips
+    /// to Active and Start becomes End without a spinner. On failure
+    /// we restore the previous ride and surface a message.
     private func setStatus(_ status: GroupRideStatus) async {
+        guard let current = ride else { return }
+        let previous = current
+
+        // 1. Optimistic local mutation. We can't build a full new
+        //    GroupRide (immutable, all `let` fields), so mirror the
+        //    status change by rehydrating with the same fields and
+        //    the new status/timestamps.
+        let now = Date()
+        ride = GroupRide(
+            id: current.id,
+            groupID: current.groupID,
+            authorID: current.authorID,
+            rideID: current.rideID,
+            title: current.title,
+            description: current.description,
+            destinationName: current.destinationName,
+            destinationAddress: current.destinationAddress,
+            destinationLatitude: current.destinationLatitude,
+            destinationLongitude: current.destinationLongitude,
+            waypoints: current.waypoints,
+            googleMapsURL: current.googleMapsURL,
+            status: status,
+            visibility: current.visibility,
+            liveLocationEnabled: current.liveLocationEnabled,
+            scheduledAt: current.scheduledAt,
+            startedAt: status == .active ? now : current.startedAt,
+            completedAt: status == .completed ? now : current.completedAt,
+            createdAt: current.createdAt
+        )
+        if status == .completed || status == .cancelled {
+            liveLocation.stop()
+        }
+        errorMessage = nil
+
+        // 2. Server reconcile.
         do {
             let updated = try await rideService.setStatus(rideID: rideID, status: status)
+            // Server timestamps supersede ours — swap in the
+            // canonical row silently.
             ride = updated
-            if status == .completed || status == .cancelled {
-                liveLocation.stop()
-            }
         } catch {
-            errorMessage = "Couldn't update ride status."
+            // 3. Rollback + visible message.
+            ride = previous
+            errorMessage = statusRollbackMessage(for: status)
+        }
+    }
+
+    private func statusRollbackMessage(for status: GroupRideStatus) -> String {
+        switch status {
+        case .active:    return "Couldn't start the ride. Try again."
+        case .completed: return "Couldn't end the ride. Try again."
+        case .cancelled: return "Couldn't cancel the ride. Try again."
+        case .planned:   return "Couldn't update ride status."
         }
     }
 

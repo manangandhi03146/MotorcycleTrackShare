@@ -36,6 +36,36 @@ struct CloudRideStore {
         return returned.id
     }
 
+    // MARK: - Bulk upsert (used by pending-queue drain)
+
+    /// Batched variant of `syncRide` for the DB rows only. Media
+    /// (photos, telemetry files) are per-item HTTPS uploads and stay
+    /// the caller's responsibility so they can be fired concurrently
+    /// after this returns. Returns a `local_id → remote_id` map.
+    /// Chunks at 50 rows — ride rows carry more columns than bikes so
+    /// we keep the batch smaller to stay under the PostgREST body cap.
+    func syncRidesBulk(_ rides: [SavedRide], userID: UUID) async throws -> [UUID: UUID] {
+        guard !rides.isEmpty else { return [:] }
+
+        struct Returned: Decodable { let id: UUID; let localId: UUID
+            enum CodingKeys: String, CodingKey { case id; case localId = "local_id" }
+        }
+
+        var remoteByLocal: [UUID: UUID] = [:]
+        let chunks = rides.chunked(into: 50)
+        for chunk in chunks {
+            let payloads = chunk.map { RideUpsertPayload(ride: $0, userID: userID) }
+            let returned: [Returned] = try await client
+                .from("rides")
+                .upsert(payloads, onConflict: "user_id,local_id")
+                .select("id, local_id")
+                .execute()
+                .value
+            for row in returned { remoteByLocal[row.localId] = row.id }
+        }
+        return remoteByLocal
+    }
+
     // MARK: - Upload telemetry JSONL
 
     func uploadTelemetry(fileURL: URL, path: String) async throws {
