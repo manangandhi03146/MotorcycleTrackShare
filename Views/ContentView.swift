@@ -305,9 +305,7 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .raceLineStartGroupRideRecording)) { note in
-            let rideID  = note.userInfo?["rideID"] as? UUID
-            let title   = (note.userInfo?["title"] as? String) ?? "group ride"
-            handleGroupRideRecordingRequest(rideID: rideID, title: title)
+            handleGroupRideRecordingNotification(note)
         }
         .alert("Ride too short to save", isPresented: $showTooShortAlert) {
             Button("OK", role: .cancel) { }
@@ -368,6 +366,17 @@ struct ContentView: View {
         pendingRideType = rideType
         recorder.start(motion: motion, location: location, sampleHz: samplingRateHz)
         UIApplication.shared.isIdleTimerDisabled = true
+    }
+
+    /// Bridge from the raw Notification into typed args so the
+    /// `.onReceive` closure body stays trivial (and doesn't blow up
+    /// the SwiftUI type-checker on the enclosing view).
+    private func handleGroupRideRecordingNotification(_ note: Notification) {
+        let info    = note.userInfo
+        let rideID  = info?["rideID"] as? UUID
+        let rawTitle = info?["title"] as? String
+        let title   = (rawTitle?.isEmpty == false) ? rawTitle! : "group ride"
+        handleGroupRideRecordingRequest(rideID: rideID, title: title)
     }
 
     /// Reacts to the .raceLineStartGroupRideRecording notification
