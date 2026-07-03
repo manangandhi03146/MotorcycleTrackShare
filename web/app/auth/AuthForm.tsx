@@ -59,8 +59,14 @@ export default function AuthForm() {
       const { error } = await supabase.auth.resetPasswordForEmail(trimEmail, {
         redirectTo: `${window.location.origin}/auth/reset`,
       });
-      if (error) setError(error.message);
-      else setMessage("Check your email for a password reset link.");
+      // Always show the same neutral response regardless of whether the
+      // address is registered, so the form can't be used to enumerate
+      // accounts. Only genuine rate-limit errors get surfaced.
+      if (error && /rate|too many|seconds/i.test(error.message)) {
+        setError("Too many requests. Please wait a minute and try again.");
+      } else {
+        setMessage("If an account exists for that email, we've sent a reset link.");
+      }
       setLoading(false);
       return;
     }
@@ -73,8 +79,13 @@ export default function AuthForm() {
         return;
       }
       const { error } = await supabase.auth.signUp({ email: trimEmail, password: trimPass });
-      if (error) setError(friendlyError(error.message));
-      else setMessage("Check your email to confirm your account.");
+      // "Already registered" gets the same response as a fresh signup so the
+      // form can't be used to check whether an email has an account.
+      if (error && !/already|registered/i.test(error.message)) {
+        setError(friendlyError(error.message));
+      } else {
+        setMessage("Check your email to confirm your account.");
+      }
     } else {
       const { error } = await supabase.auth.signInWithPassword({ email: trimEmail, password: trimPass });
       if (error) setError(friendlyError(error.message));
@@ -87,8 +98,6 @@ export default function AuthForm() {
     const m = msg.toLowerCase();
     if (m.includes("invalid login credentials") || m.includes("invalid_credentials"))
       return "Incorrect email or password.";
-    if (m.includes("email") && m.includes("already"))
-      return "An account with this email already exists.";
     if (m.includes("password") && (m.includes("weak") || m.includes("short")))
       return "Password must be at least 12 characters.";
     if (m.includes("network") || m.includes("offline"))
