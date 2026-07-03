@@ -23,15 +23,18 @@
 --    prevents a search-path-injection attack against SECURITY DEFINER code.
 
 -- 1. Revoke the RPC surface on trigger-only functions.
-REVOKE EXECUTE ON FUNCTION public.handle_updated_at()        FROM anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.handle_new_user()          FROM anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.handle_new_privacy_row()   FROM anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.handle_new_group_ride()    FROM anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.handle_group_member_left() FROM anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.groups_before_insert()     FROM anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.groups_after_insert()      FROM anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.enforce_ride_limit()       FROM anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.rls_auto_enable()          FROM anon, authenticated;
+-- Must revoke from PUBLIC: Postgres grants function EXECUTE to PUBLIC by
+-- default and anon/authenticated inherit it, so revoking those roles alone is
+-- a no-op. Triggers still fire (the trigger mechanism does not check EXECUTE).
+REVOKE EXECUTE ON FUNCTION public.handle_updated_at()        FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.handle_new_user()          FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.handle_new_privacy_row()   FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.handle_new_group_ride()    FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.handle_group_member_left() FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.groups_before_insert()     FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.groups_after_insert()      FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.enforce_ride_limit()       FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.rls_auto_enable()          FROM PUBLIC;
 
 -- 2. Pin search_path on the functions the linter flagged as mutable.
 -- ALTER FUNCTION only changes the setting, never the body — non-breaking.

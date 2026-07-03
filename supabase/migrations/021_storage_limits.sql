@@ -14,13 +14,18 @@
 -- by declared content type. Only buckets known to hold images are MIME-locked;
 -- the telemetry bucket keeps a size cap without a MIME restriction.
 
--- Photo buckets: cap at 15 MB, images only.
+-- Clearly image-only buckets: cap at 15 MB, images only.
 UPDATE storage.buckets
 SET file_size_limit = 15728640,  -- 15 MB
     allowed_mime_types = ARRAY['image/jpeg', 'image/png', 'image/heic', 'image/webp']
-WHERE id IN ('avatars', 'ride-photos', 'bike-photos', 'maintenance-photos', 'moto-media');
+WHERE id IN ('avatars', 'ride-photos', 'bike-photos', 'maintenance-photos');
 
--- Telemetry bucket: cap at 50 MB (JSON-lines can be large); no MIME lock.
+-- moto-media (mixed/ambiguous use) and ride-telemetry (JSON-lines): size cap
+-- only, no MIME restriction, so future non-image upload paths aren't broken.
+UPDATE storage.buckets
+SET file_size_limit = 15728640  -- 15 MB
+WHERE id = 'moto-media';
+
 UPDATE storage.buckets
 SET file_size_limit = 52428800  -- 50 MB
 WHERE id = 'ride-telemetry';
