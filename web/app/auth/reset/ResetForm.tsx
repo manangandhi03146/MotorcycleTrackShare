@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { validatePassword } from "@/lib/passwordPolicy";
 
 export default function ResetForm() {
   const router = useRouter();
@@ -36,8 +37,9 @@ export default function ResetForm() {
       setError("Passwords don't match.");
       return;
     }
-    if (password.length < 6) {
-      setError("Password must be at least 6 characters.");
+    const policyError = validatePassword(password);
+    if (policyError) {
+      setError(policyError);
       return;
     }
 

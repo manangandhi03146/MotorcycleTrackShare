@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { validatePassword } from "@/lib/passwordPolicy";
 
 type OAuthProvider = "google" | "apple";
 
@@ -65,6 +66,12 @@ export default function AuthForm() {
     }
 
     if (mode === "signup") {
+      const policyError = validatePassword(trimPass);
+      if (policyError) {
+        setError(policyError);
+        setLoading(false);
+        return;
+      }
       const { error } = await supabase.auth.signUp({ email: trimEmail, password: trimPass });
       if (error) setError(friendlyError(error.message));
       else setMessage("Check your email to confirm your account.");
@@ -83,7 +90,7 @@ export default function AuthForm() {
     if (m.includes("email") && m.includes("already"))
       return "An account with this email already exists.";
     if (m.includes("password") && (m.includes("weak") || m.includes("short")))
-      return "Password must be at least 6 characters.";
+      return "Password must be at least 12 characters.";
     if (m.includes("network") || m.includes("offline"))
       return "Network error. Check your connection.";
     return "Something went wrong. Please try again.";
