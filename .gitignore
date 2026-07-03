@@ -94,3 +94,7 @@ web/.env.production
 
 # Supabase local CLI cache
 supabase/.temp/
+
+# Generated knowledge graph + local tooling
+graphify-out/
+standalone/
