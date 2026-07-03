@@ -25,8 +25,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(`${origin}/auth?error=${encodeURIComponent("Missing authorization code")}`);
   }
 
-  // Only allow same-origin redirects.
-  const safeNext = next.startsWith("/") ? next : "/dashboard";
+  // Only allow same-origin redirects. Must start with a single "/" — reject
+  // protocol-relative ("//evil.com") and backslash ("/\evil.com") forms that
+  // browsers resolve to an external host.
+  const safeNext =
+    next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\")
+      ? next
+      : "/dashboard";
   const response = NextResponse.redirect(`${origin}${safeNext}`);
 
   // Important: the Supabase server client must write cookies to *this*

@@ -46,5 +46,15 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
+  // Authenticated pages contain personalized data — tell browsers and shared
+  // proxies never to cache them, so a signed-in page can't be retrieved from
+  // cache by the next person on the device or an intermediary.
+  if (isProtected && user) {
+    supabaseResponse.headers.set(
+      "Cache-Control",
+      "no-store, no-cache, must-revalidate, private"
+    );
+  }
+
   return supabaseResponse;
 }

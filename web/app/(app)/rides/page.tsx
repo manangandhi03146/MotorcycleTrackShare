@@ -17,7 +17,7 @@ export default async function RidesPage() {
   if (!user) redirect("/auth");
 
   const [{ data: rides }, { data: bikes }] = await Promise.all([
-    supabase.from("rides").select("*").order("started_at", { ascending: false }),
+    supabase.from("rides").select("*").order("started_at", { ascending: false }).limit(1000),
     supabase.from("bikes").select("id, nickname, make, model, year"),
   ]);
 

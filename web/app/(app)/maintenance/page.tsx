@@ -30,7 +30,7 @@ export default async function MaintenancePage() {
   if (!user) redirect("/auth");
 
   const [{ data: records }, { data: bikes }] = await Promise.all([
-    supabase.from("maintenance_records").select("*").order("date", { ascending: false }),
+    supabase.from("maintenance_records").select("*").order("date", { ascending: false }).limit(1000),
     supabase.from("bikes").select("id, nickname, make, model, year"),
   ]);
 

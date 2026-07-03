@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { validatePassword } from "@/lib/passwordPolicy";
 
 export default function ResetForm() {
   const router = useRouter();
@@ -36,8 +37,9 @@ export default function ResetForm() {
       setError("Passwords don't match.");
       return;
     }
-    if (password.length < 6) {
-      setError("Password must be at least 6 characters.");
+    const policyError = validatePassword(password);
+    if (policyError) {
+      setError(policyError);
       return;
     }
 
@@ -48,6 +50,9 @@ export default function ResetForm() {
     if (error) {
       setError(error.message);
     } else {
+      // A password reset often means the old one was compromised — revoke
+      // every other session so only this device stays signed in.
+      await supabase.auth.signOut({ scope: "others" }).catch(() => {});
       router.push("/dashboard");
     }
     setLoading(false);
