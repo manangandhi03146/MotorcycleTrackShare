@@ -12,6 +12,8 @@ struct PublicProfileView: View {
     @State private var loading = true
     @State private var isFollowing = false
     @State private var errorMessage: String?
+    @State private var bikes: [RiderBike] = []
+    @State private var stats: RiderStats?
 
     private let profileService = SocialProfileService()
     private let followService = FollowService()
@@ -29,12 +31,10 @@ struct PublicProfileView: View {
                         heroCard(profile)
                         followRow(profile)
                         if profile.showBikes {
-                            infoCard(icon: "sportbike-placeholder", title: "Bikes",
-                                     detail: "The garage will list bikes here when this rider's data is ready.")
+                            bikesCard
                         }
                         if profile.showRideStats {
-                            infoCard(icon: "chart.bar.xaxis", title: "Ride stats",
-                                     detail: "Public ride totals will appear here as data flows in from Supabase.")
+                            rideStatsCard
                         }
                     } else {
                         EmptyStateView(
@@ -122,21 +122,81 @@ struct PublicProfileView: View {
         }
     }
 
-    private func infoCard(icon: String, title: String, detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .foregroundStyle(Color.appAccent)
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.appAccent)
+    private var bikesCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            cardHeader(icon: "gauge.with.needle", title: "Garage")
+            if bikes.isEmpty {
+                Text("No bikes shared yet.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.textSecondary)
+            } else {
+                ForEach(bikes) { bike in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(bike.displayName)
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(Color.textPrimary)
+                        let sub = [bike.year.map(String.init),
+                                   bike.make.isEmpty ? nil : bike.make,
+                                   bike.model.isEmpty ? nil : bike.model]
+                            .compactMap { $0 }.joined(separator: " ")
+                        if !sub.isEmpty && sub != bike.displayName {
+                            Text(sub)
+                                .font(.system(size: 12))
+                                .foregroundStyle(Color.textSecondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
-            Text(detail)
-                .font(.system(size: 13))
-                .foregroundStyle(Color.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .minimalCard()
+    }
+
+    private var rideStatsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            cardHeader(icon: "chart.bar.xaxis", title: "Ride Stats")
+            if let s = stats {
+                statRow("Rides", "\(s.rideCount)")
+                statRow("Distance", String(format: "%.0f mi", s.totalDistanceM * 0.000621371))
+                statRow("Time", formatDuration(s.totalDurationS))
+                statRow("Top Speed", String(format: "%.0f mph", s.maxSpeedMps * 2.2369363))
+                statRow("Max Lean", String(format: "%.0f°", s.maxLeanDeg))
+            } else {
+                Text("No ride stats shared yet.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.textSecondary)
+            }
+        }
+        .minimalCard()
+    }
+
+    private func cardHeader(icon: String, title: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .foregroundStyle(Color.appAccent)
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.appAccent)
+        }
+    }
+
+    private func statRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 14))
+                .foregroundStyle(Color.textSecondary)
+            Spacer()
+            Text(value)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.textPrimary)
+        }
+    }
+
+    private func formatDuration(_ seconds: Double) -> String {
+        let total = Int(seconds)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        return h > 0 ? "\(h)h \(m)m" : "\(m)m"
     }
 
     // MARK: - Actions
@@ -145,9 +205,20 @@ struct PublicProfileView: View {
         loading = true
         defer { loading = false }
         do {
-            profile = try await profileService.fetchProfile(userID: userID)
+            let loaded = try await profileService.fetchProfile(userID: userID)
+            profile = loaded
             if let me = authService.userID {
                 isFollowing = (try? await followService.isFollowing(follower: me, followee: userID)) ?? false
+            }
+            // Only public profiles expose bikes/stats, and only for the
+            // switches the rider left on. The RPCs enforce this server-side too.
+            if let p = loaded, p.isPublic {
+                if p.showBikes {
+                    bikes = (try? await profileService.fetchPublicBikes(userID: userID)) ?? []
+                }
+                if p.showRideStats {
+                    stats = try? await profileService.fetchPublicStats(userID: userID)
+                }
             }
         } catch {
             guard !isCancellationError(error) else { return }

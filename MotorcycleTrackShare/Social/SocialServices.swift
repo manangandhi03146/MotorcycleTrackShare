@@ -19,6 +19,45 @@ private enum SocialTable {
     static let activityFeed          = "activity_feed"
 }
 
+// MARK: - Public rider data (bikes + aggregate stats)
+
+/// A bike shown on another rider's public profile. Curated, non-sensitive
+/// columns only (no photos, odometer, or notes) — see migration 024.
+struct RiderBike: Decodable, Identifiable {
+    let nickname: String
+    let make: String
+    let model: String
+    let year: Int?
+
+    var id: String { "\(nickname)|\(make)|\(model)|\(year ?? 0)" }
+
+    var displayName: String {
+        let trimmed = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        let parts = [year.map(String.init), make.isEmpty ? nil : make,
+                     model.isEmpty ? nil : model].compactMap { $0 }
+        return parts.isEmpty ? "Bike" : parts.joined(separator: " ")
+    }
+}
+
+/// Aggregate ride totals shown on another rider's public profile. Totals only —
+/// never individual rides, routes, or locations (see migration 024).
+struct RiderStats: Decodable {
+    let rideCount: Int
+    let totalDistanceM: Double
+    let totalDurationS: Double
+    let maxSpeedMps: Double
+    let maxLeanDeg: Double
+
+    enum CodingKeys: String, CodingKey {
+        case rideCount       = "ride_count"
+        case totalDistanceM  = "total_distance_m"
+        case totalDurationS  = "total_duration_s"
+        case maxSpeedMps     = "max_speed_mps"
+        case maxLeanDeg      = "max_lean_deg"
+    }
+}
+
 // MARK: - Public profile
 
 /// Read + write the social columns on `profiles`. Owner-editable, publicly
@@ -70,6 +109,28 @@ struct SocialProfileService {
             .in("id", values: ids)
             .execute()
             .value
+    }
+
+    // MARK: - Public rider bikes + stats
+
+    /// A public rider's bikes. The RPC returns rows only when the target
+    /// profile is public AND the rider has "show bikes" enabled — the privacy
+    /// gate is enforced server-side, not here.
+    func fetchPublicBikes(userID: UUID) async throws -> [RiderBike] {
+        try await client
+            .rpc("get_public_rider_bikes", params: ["p_user_id": userID.uuidString])
+            .execute()
+            .value
+    }
+
+    /// A public rider's aggregate ride totals, or nil when nothing is shared
+    /// (profile private, "show ride stats" off, or no rides).
+    func fetchPublicStats(userID: UUID) async throws -> RiderStats? {
+        let rows: [RiderStats] = try await client
+            .rpc("get_public_rider_stats", params: ["p_user_id": userID.uuidString])
+            .execute()
+            .value
+        return rows.first
     }
 
     // MARK: - Avatar
@@ -392,20 +453,17 @@ struct GroupService {
 
     func joinByCode(userID: UUID, code: String) async throws -> GroupSummary {
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        let group: GroupSummary
-        do {
-            group = try await client
-                .from(SocialTable.groups)
-                .select()
-                .eq("join_code", value: trimmed)
-                .single()
-                .execute()
-                .value
-        } catch {
-            if isNotFound(error) { throw SocialError.invalidJoinCode }
-            throw error
-        }
-        try await join(userID: userID, groupID: group.id)
+        // A private group isn't visible via a direct SELECT (RLS scopes groups
+        // to public / owned / already-joined), so a code lookup would always
+        // come back empty and look like an invalid code. Join through a
+        // SECURITY DEFINER RPC that treats the invite code as the shared secret:
+        // it finds the group by code, adds the caller as a member, and returns
+        // the group. Empty result = the code matched nothing.
+        let groups: [GroupSummary] = try await client
+            .rpc("join_group_by_code", params: ["p_code": trimmed])
+            .execute()
+            .value
+        guard let group = groups.first else { throw SocialError.invalidJoinCode }
         return group
     }
 
