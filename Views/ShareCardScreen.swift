@@ -36,6 +36,12 @@ struct ShareCardScreen: View {
     @State private var pendingStorageMode: StorageMode = .localOnly
     @State private var selectedKey: String = "current"
 
+    // Public web-link sharing
+    @State private var shareLinkURL: URL?
+    @State private var isPreparingLink = false
+    @State private var showMakePublicConfirm = false
+    @State private var linkErrorMessage: String?
+
     private var hasCurrentRide: Bool {
         currentSummary != nil && currentRoute.count >= 2
     }
@@ -91,6 +97,7 @@ struct ShareCardScreen: View {
             VStack(alignment: .leading, spacing: 20) {
                 backgroundPhotoSection
                 customizeSection
+                shareLinkSection
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 16)
@@ -114,6 +121,20 @@ struct ShareCardScreen: View {
         } message: {
             Text("Please choose a different name.")
         }
+        .confirmationDialog(
+            "Create a public link?",
+            isPresented: $showMakePublicConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Create Public Link") {
+                if let ride = selectedSavedRide {
+                    Task { await createPublicLink(ride: ride) }
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Anyone with the link will be able to view this ride's stats (distance, speed, lean, and your notes) on the web. You can stop sharing at any time.")
+        }
         .onChange(of: showDuplicateAlert) { _, isShowing in
             guard !isShowing, reopenNameSheetAfterDuplicate else { return }
             reopenNameSheetAfterDuplicate = false
@@ -122,7 +143,11 @@ struct ShareCardScreen: View {
         .onChange(of: initiallySelectedRideID) { _, newValue in
             if newValue != nil { applyInitialSelectionFromNavigation() }
         }
-        .onChange(of: selectedKey)     { _, _ in Task { await applyAssociatedRidePhotoIfAvailable() } }
+        .onChange(of: selectedKey)     { _, _ in
+            shareLinkURL = nil
+            linkErrorMessage = nil
+            Task { await applyAssociatedRidePhotoIfAvailable() }
+        }
         .onChange(of: title)           { _, _ in refreshExportedURLIfNeeded() }
         .onChange(of: mode)            { _, _ in refreshExportedURLIfNeeded() }
         .onChange(of: textColor)       { _, _ in refreshExportedURLIfNeeded() }
@@ -331,6 +356,79 @@ struct ShareCardScreen: View {
             .background(Color.appSurface)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
+    }
+
+    // MARK: - Share Web Link
+
+    @ViewBuilder
+    private var shareLinkSection: some View {
+        if let ride = selectedSavedRide {
+            VStack(alignment: .leading, spacing: 10) {
+                sectionHeader("Share Link")
+
+                VStack(alignment: .leading, spacing: 12) {
+                    if ride.remoteID == nil {
+                        linkHint("Sync this ride to the cloud to create a shareable web link.")
+                    } else if let url = shareLinkURL {
+                        linkHint("Anyone with this link can view this ride's stats on the web.")
+                        HStack(spacing: 10) {
+                            ShareLink(item: url) {
+                                Label("Share Link", systemImage: "link")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundStyle(Color.appAccent)
+                                    .frame(maxWidth: .infinity, minHeight: 44)
+                                    .background(Color.appAccent.opacity(0.10))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            }
+                            Button {
+                                Task { await revokePublicLink(ride: ride) }
+                            } label: {
+                                Text("Stop Sharing")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundStyle(.red)
+                                    .frame(maxWidth: .infinity, minHeight: 44)
+                                    .background(Color.red.opacity(0.10))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            }
+                        }
+                    } else {
+                        linkHint("Create a public web link to this ride's stat card.")
+                        Button {
+                            showMakePublicConfirm = true
+                        } label: {
+                            HStack(spacing: 8) {
+                                if isPreparingLink {
+                                    ProgressView().tint(Color.appAccent).scaleEffect(0.85)
+                                }
+                                Text(isPreparingLink ? "Creating…" : "Create Public Link")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundStyle(Color.appAccent)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .background(Color.appAccent.opacity(0.10))
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                        .disabled(isPreparingLink)
+                    }
+
+                    if let err = linkErrorMessage {
+                        Text(err)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.red)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 13)
+                .background(Color.appSurface)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+        }
+    }
+
+    private func linkHint(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 13))
+            .foregroundStyle(Color.textSecondary)
     }
 
     // MARK: - Export Toolbar Button
@@ -545,6 +643,34 @@ struct ShareCardScreen: View {
         }
         backgroundUIImage = normalizedImage(image)
         applyDefaultMode(for: image)
+    }
+
+    // MARK: - Public link actions
+
+    private func createPublicLink(ride: SavedRide) async {
+        guard let remoteID = ride.remoteID else { return }
+        isPreparingLink = true
+        linkErrorMessage = nil
+        let store = CloudRideStore()
+        do {
+            try await store.setRideVisibility(remoteID: remoteID, isPublic: true)
+            shareLinkURL = store.publicShareURL(remoteID: remoteID)
+        } catch {
+            linkErrorMessage = "Couldn't create the link. Check your connection and try again."
+        }
+        isPreparingLink = false
+    }
+
+    private func revokePublicLink(ride: SavedRide) async {
+        guard let remoteID = ride.remoteID else { return }
+        linkErrorMessage = nil
+        let store = CloudRideStore()
+        do {
+            try await store.setRideVisibility(remoteID: remoteID, isPublic: false)
+            shareLinkURL = nil
+        } catch {
+            linkErrorMessage = "Couldn't stop sharing. Please try again."
+        }
     }
 
     private func applyDefaultMode(for image: UIImage) {

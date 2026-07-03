@@ -88,6 +88,31 @@ struct CloudRideStore {
         return try await storage.createSignedURL(path: path, bucket: "ride-telemetry")
     }
 
+    // MARK: - Public share link
+
+    /// Base URL of the web share page. A ride's public card lives at
+    /// `<base>/<rides.id>` and is served by the get_public_ride() RPC.
+    static let webShareBase = "https://racelineapp.com/share"
+
+    /// Public web link for a synced ride. Returns nil for a ride that has not
+    /// been synced to the cloud yet (no remote id, so nothing to link to).
+    func publicShareURL(remoteID: UUID) -> URL? {
+        URL(string: "\(Self.webShareBase)/\(remoteID.uuidString)")
+    }
+
+    /// Flip a ride's cloud visibility. RLS restricts the update to the ride's
+    /// owner (`user_id = auth.uid()`), so this can only ever change your own
+    /// rides. Marking a ride public makes its stat card viewable by anyone
+    /// with the link; marking it private takes the link offline.
+    func setRideVisibility(remoteID: UUID, isPublic: Bool) async throws {
+        struct VisibilityUpdate: Encodable { let visibility: String }
+        try await client
+            .from("rides")
+            .update(VisibilityUpdate(visibility: isPublic ? "public" : "private"))
+            .eq("id", value: remoteID.uuidString)
+            .execute()
+    }
+
     // MARK: - Delete ride from DB + storage
 
     func deleteRide(remoteID: UUID, deletePhoto: Bool, userID: UUID, rideID: UUID) async throws {
@@ -216,7 +241,10 @@ private struct RideUpsertPayload: Encodable {
     let telemetryPath: String?
     let bikeLocalId: UUID?
     let source: String?
-    let visibility: String
+    // NOTE: `visibility` is deliberately NOT in this payload. On insert the DB
+    // default ('private') applies; on upsert-update, omitting the column
+    // preserves whatever the user set via setRideVisibility(), so sharing a
+    // ride publicly survives later metadata re-syncs.
     let createdAt: Date
 
     enum CodingKeys: String, CodingKey {
@@ -249,7 +277,7 @@ private struct RideUpsertPayload: Encodable {
         case photoPath = "photo_path"
         case telemetryPath = "telemetry_path"
         case bikeLocalId = "bike_local_id"
-        case source, visibility
+        case source
         case createdAt = "created_at"
     }
 
@@ -285,7 +313,6 @@ private struct RideUpsertPayload: Encodable {
         telemetryPath       = ride.cloudTelemetryPath
         bikeLocalId         = ride.bikeID
         source              = ride.source?.rawValue
-        visibility          = "private"
         createdAt           = ride.createdAt
     }
 }
