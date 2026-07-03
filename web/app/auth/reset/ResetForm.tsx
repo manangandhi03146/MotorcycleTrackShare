@@ -50,6 +50,9 @@ export default function ResetForm() {
     if (error) {
       setError(error.message);
     } else {
+      // A password reset often means the old one was compromised — revoke
+      // every other session so only this device stays signed in.
+      await supabase.auth.signOut({ scope: "others" }).catch(() => {});
       router.push("/dashboard");
     }
     setLoading(false);
