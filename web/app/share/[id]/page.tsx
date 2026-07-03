@@ -16,9 +16,15 @@ export default async function SharePage({ params }: { params: Promise<{ id: stri
   const { id } = await params;
   const supabase = await createClient();
 
+  // This is a PUBLIC page. Select only the display columns the share card
+  // renders — never "*" — so raw telemetry paths, storage keys, user_id, and
+  // internal flags can't be exposed here even if row visibility is ever
+  // broadened. (Today RLS still scopes rides to their owner.)
   const { data: rideData } = await supabase
     .from("rides")
-    .select("*")
+    .select(
+      "name, started_at, ride_type, bike_id, distance_meters, duration_seconds, max_speed_mps, max_right_lean_deg, max_left_lean_deg, tags, notes"
+    )
     .eq("id", id)
     .single();
 
@@ -27,7 +33,11 @@ export default async function SharePage({ params }: { params: Promise<{ id: stri
 
   let bike: BikeRow | null = null;
   if (ride.bike_id) {
-    const { data } = await supabase.from("bikes").select("*").eq("id", ride.bike_id).single();
+    const { data } = await supabase
+      .from("bikes")
+      .select("nickname, year, make, model")
+      .eq("id", ride.bike_id)
+      .single();
     bike = data as BikeRow | null;
   }
 
