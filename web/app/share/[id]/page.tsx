@@ -3,8 +3,26 @@ export const dynamic = "force-dynamic";
 import { createClient } from "@/lib/supabase/server";
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import type { RideSummaryRow, BikeRow } from "@/lib/types";
 import { mpsToMph, metersToMiles, secToDisplay } from "@/lib/types";
+
+// Shape returned by the public.get_public_ride() RPC — curated display columns
+// only (no user_id, storage paths, or internal flags). See migration 022.
+interface PublicRide {
+  name: string | null;
+  ride_type: "street" | "track";
+  started_at: string | null;
+  duration_seconds: number;
+  distance_meters: number;
+  max_speed_mps: number;
+  max_left_lean_deg: number;
+  max_right_lean_deg: number;
+  tags: string[] | null;
+  notes: string | null;
+  bike_nickname: string | null;
+  bike_year: number | null;
+  bike_make: string | null;
+  bike_model: string | null;
+}
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString("en-US", {
@@ -16,35 +34,19 @@ export default async function SharePage({ params }: { params: Promise<{ id: stri
   const { id } = await params;
   const supabase = await createClient();
 
-  // This is a PUBLIC page. Select only the display columns the share card
-  // renders — never "*" — so raw telemetry paths, storage keys, user_id, and
-  // internal flags can't be exposed here even if row visibility is ever
-  // broadened. (Today RLS still scopes rides to their owner.)
-  const { data: rideData } = await supabase
-    .from("rides")
-    .select(
-      "name, started_at, ride_type, bike_id, distance_meters, duration_seconds, max_speed_mps, max_right_lean_deg, max_left_lean_deg, tags, notes"
-    )
-    .eq("id", id)
-    .single();
-
-  if (!rideData) notFound();
-  const ride = rideData as RideSummaryRow;
-
-  let bike: BikeRow | null = null;
-  if (ride.bike_id) {
-    const { data } = await supabase
-      .from("bikes")
-      .select("nickname, year, make, model")
-      .eq("id", ride.bike_id)
-      .single();
-    bike = data as BikeRow | null;
-  }
+  // Public share endpoint. get_public_ride() is a SECURITY DEFINER function
+  // that returns a curated row ONLY for rides the owner marked public — it
+  // never exposes the rides base table (user_id, storage paths, internal
+  // flags) to anonymous visitors. A private or unknown id returns no row → 404.
+  const { data, error } = await supabase.rpc("get_public_ride", { p_ride_id: id });
+  const ride = (data?.[0] ?? null) as PublicRide | null;
+  if (error || !ride) notFound();
 
   const maxLean = Math.max(ride.max_right_lean_deg, ride.max_left_lean_deg);
-  const bikeName = bike
-    ? bike.nickname || `${[bike.year, bike.make, bike.model].filter(Boolean).join(" ")}`
-    : null;
+  const bikeName =
+    ride.bike_nickname ||
+    [ride.bike_year, ride.bike_make, ride.bike_model].filter(Boolean).join(" ") ||
+    null;
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-[var(--bg)] px-4 py-12">
