@@ -174,7 +174,7 @@ struct GarageView: View {
                 .environmentObject(maintenanceStore)
                 .environmentObject(garageStore)
             } else {
-                Color.black
+                Color.appBg
                     .ignoresSafeArea()
                     .onAppear { expandedBikeID = nil }
             }
@@ -185,7 +185,7 @@ struct GarageView: View {
         HStack {
             Text("Garage")
                 .font(.system(size: 34, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.textPrimary)
             Spacer()
             Button {
                 attemptAddBike()
@@ -242,7 +242,7 @@ struct GarageView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(bike.title)
                     .font(.headline)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.textPrimary)
                     .lineLimit(2)
 
                 if !bike.specLine.isEmpty {
@@ -599,7 +599,7 @@ private struct GarageBikeDetailScreen: View {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(bike.title)
                                 .font(.title2.weight(.semibold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(Color.textPrimary)
                                 .lineLimit(2)
                             Text(bike.specLine)
                                 .font(.subheadline)
@@ -657,7 +657,7 @@ private struct GarageBikeDetailScreen: View {
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(Color(white: 0.40))
+                    .foregroundStyle(Color.textTertiary)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
@@ -702,7 +702,7 @@ private struct GarageBikeDetailScreen: View {
                             .foregroundStyle(Color.appAccent)
                         Text("Add Bike Photo")
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Color.textPrimary)
                         Text("Tap the gear to upload")
                             .font(.caption)
                             .foregroundStyle(Color.textGhost)
@@ -1064,7 +1064,7 @@ private struct EditBikeSheet: View {
                                             .foregroundStyle(Color.appAccent)
                                         Text("Add Bike Photo")
                                             .font(.subheadline.weight(.semibold))
-                                            .foregroundStyle(.white)
+                                            .foregroundStyle(Color.textPrimary)
                                         Text("Tap to upload or take photo")
                                             .font(.caption)
                                             .foregroundStyle(Color.textGhost)
@@ -1085,9 +1085,9 @@ private struct EditBikeSheet: View {
                                 .padding(.vertical, 14)
                                 .font(.system(size: 16, weight: .semibold))
                                 .foregroundStyle(.white)
-                                .background(Color.red.opacity(0.85))
-                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .background(Color.red)
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                         }
                         .buttonStyle(.plain)
                     }
@@ -1212,9 +1212,9 @@ private struct CatalogPickerButton: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
                         .font(.caption)
-                        .foregroundStyle(Color(white: 0.50))
+                        .foregroundStyle(Color.textSecondary)
                     Text(selection)
-                        .foregroundStyle(hasValue ? Color.white : Color(white: 0.45))
+                        .foregroundStyle(hasValue ? Color.textPrimary : Color.textGhost)
                         .lineLimit(1)
                 }
                 Spacer()
@@ -1251,11 +1251,11 @@ private struct CatalogSearchSheet: View {
             List {
                 if query.isEmpty {
                     Text("Type to search \(title.lowercased())s")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.textSecondary)
                         .listRowBackground(Color.clear)
                 } else if filtered.isEmpty {
                     Text("No results for \"\(query)\"")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.textSecondary)
                         .listRowBackground(Color.clear)
                 } else {
                     ForEach(filtered, id: \.self) { item in
@@ -1264,12 +1264,15 @@ private struct CatalogSearchSheet: View {
                             dismiss()
                         } label: {
                             Text(item)
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(Color.textPrimary)
                         }
+                        .listRowBackground(Color.clear)
                     }
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Color.appBg)
             .searchable(
                 text: $query,
                 placement: .navigationBarDrawer(displayMode: .always),

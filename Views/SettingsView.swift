@@ -68,7 +68,7 @@ struct SettingsView: View {
                             Spacer()
                             Text(lastSync, style: .relative)
                                 .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.textSecondary)
                         }
                     }
 
@@ -111,7 +111,7 @@ struct SettingsView: View {
                                 .scaleEffect(0.8)
                             Text("Syncing…")
                                 .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.textSecondary)
                         }
                     }
                 } header: {
@@ -122,6 +122,7 @@ struct SettingsView: View {
                             .foregroundStyle(.red)
                     }
                 }
+                .listRowBackground(Color.appSurface)
             }
 
             // Default storage mode
@@ -148,6 +149,7 @@ struct SettingsView: View {
                 Text(storageModeFooter)
                     .font(.caption)
             }
+            .listRowBackground(Color.appSurface)
 
             // Recording
             Section {
@@ -170,6 +172,7 @@ struct SettingsView: View {
                         .font(.caption)
                 }
             }
+            .listRowBackground(Color.appSurface)
 
             // Route privacy
             Section {
@@ -190,6 +193,7 @@ struct SettingsView: View {
                 Text("Hides the start and end of your route on share cards and web maps to protect your home, school, and frequent locations.")
                     .font(.caption)
             }
+            .listRowBackground(Color.appSurface)
 
             // Help
             Section {
@@ -205,6 +209,7 @@ struct SettingsView: View {
                 Text("Replay the welcome walkthrough that appears on first launch.")
                     .font(.caption)
             }
+            .listRowBackground(Color.appSurface)
 
             // RaceLine Pro roadmap — foundation is in place; features remain free
             // during Phase 2 while StoreKit and pricing land later.
@@ -233,6 +238,7 @@ struct SettingsView: View {
                 Text("Pro isn't ready for purchase yet. Everything you can do in the app today stays free — these rows preview what Pro will bring.")
                     .font(.caption)
             }
+            .listRowBackground(Color.appSurface)
 
             // App info
             Section {
@@ -240,18 +246,21 @@ struct SettingsView: View {
                     Text("App")
                     Spacer()
                     Text("RaceLine")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.textSecondary)
                 }
                 HStack {
                     Text("Version")
                     Spacer()
                     Text(appVersionString)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.textSecondary)
                 }
             } header: {
                 Text("About")
             }
+            .listRowBackground(Color.appSurface)
         }
+        .scrollContentBackground(.hidden)
+        .background(Color.appBg)
         .contentMargins(.bottom, 80, for: .scrollContent)
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.large)
@@ -314,6 +323,7 @@ struct SettingsView: View {
             Text("Username has to be unique. Display name is what other riders see on your profile and in the feed.")
                 .font(.caption)
         }
+        .listRowBackground(Color.appSurface)
     }
 
     private var profileVisibilitySection: some View {
@@ -341,6 +351,7 @@ struct SettingsView: View {
             Text("Only fields you turn on here are visible to other riders. Email, sign-in provider, and exact ride routes are never shared.")
                 .font(.caption)
         }
+        .listRowBackground(Color.appSurface)
     }
 
     private var profilePrivacyLinkSection: some View {
@@ -353,7 +364,7 @@ struct SettingsView: View {
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color.textTertiary)
                 }
                 .foregroundStyle(Color.appAccent)
             }
@@ -363,6 +374,7 @@ struct SettingsView: View {
             Text("Activity visibility and default route-sharing behavior.")
                 .font(.caption)
         }
+        .listRowBackground(Color.appSurface)
     }
 
     private var isSocialIdentityDirty: Bool {
@@ -451,7 +463,7 @@ struct SettingsView: View {
                     .font(.system(size: 15, weight: .semibold))
                 Text(detail)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.textSecondary)
             }
         }
     }
@@ -482,7 +494,7 @@ struct SettingsView: View {
     private var syncStatusColor: Color {
         let failed  = rideStore.failedSyncRides.count
         if failed > 0 { return .red }
-        if rideStore.pendingUploadRides.count > 0 { return .orange }
+        if rideStore.pendingUploadRides.count > 0 { return .appAccent }
         return .green
     }
 

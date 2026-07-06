@@ -332,7 +332,7 @@ struct ProfileView: View {
         HStack {
             Text("Profile")
                 .font(.system(size: 34, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.textPrimary)
             Spacer()
             NavigationLink {
                 SettingsView()

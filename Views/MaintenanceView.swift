@@ -39,11 +39,11 @@ struct MaintenanceRecordRow: View {
                 // Icon
                 ZStack {
                     Circle()
-                        .fill(isDue ? Color.orange.opacity(0.18) : Color.appSurface2)
+                        .fill(isDue ? Color.appAccent.opacity(0.15) : Color.appSurface2)
                         .frame(width: 44, height: 44)
                     Image(systemName: record.type.iconName)
                         .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(isDue ? .orange : Color.appAccent)
+                        .foregroundStyle(Color.appAccent)
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -55,10 +55,10 @@ struct MaintenanceRecordRow: View {
                         if let badge = dueBadge {
                             Text(badge)
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(isDue ? .white : Color.orange)
+                                .foregroundStyle(isDue ? .white : Color.appAccent)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)
-                                .background(isDue ? Color.red : Color.orange.opacity(0.18))
+                                .background(isDue ? Color.red : Color.appAccent.opacity(0.15))
                                 .clipShape(Capsule())
                         }
                     }

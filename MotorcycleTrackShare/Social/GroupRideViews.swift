@@ -666,7 +666,7 @@ struct GroupRideDetailView: View {
                     } label: {
                         actionLabel("End Ride", icon: "stop.fill")
                             .foregroundStyle(.white)
-                            .background(Color.green)
+                            .background(Color.appAccent)
                     }
                     .buttonStyle(.plain)
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -679,8 +679,8 @@ struct GroupRideDetailView: View {
                         showCancelRideConfirm = true
                     } label: {
                         actionLabel("Cancel Ride", icon: "xmark")
-                            .foregroundStyle(.white)
-                            .background(Color.red.opacity(0.85))
+                            .foregroundStyle(.red)
+                            .background(Color.red.opacity(0.15))
                     }
                     .buttonStyle(.plain)
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))

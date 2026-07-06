@@ -93,7 +93,7 @@ struct SocialHubView: View {
         HStack {
             Text("Social")
                 .font(.system(size: 34, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.textPrimary)
             Spacer()
         }
         .padding(.horizontal, 12)
