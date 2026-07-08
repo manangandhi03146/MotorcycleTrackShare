@@ -599,7 +599,6 @@
 				INFOPLIST_KEY_CFBundleDisplayName = RaceLine;
 				INFOPLIST_KEY_CFBundleName = RaceLine;
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "RaceLine uses your location to record your ride route, speed, and elevation. Location data is only collected while a ride is actively recording.";
-				INFOPLIST_KEY_NSMotionUsageDescription = "RaceLine uses motion sensors to measure lean angle, acceleration, and braking forces during rides.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -633,7 +632,6 @@
 				INFOPLIST_KEY_CFBundleDisplayName = RaceLine;
 				INFOPLIST_KEY_CFBundleName = RaceLine;
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "RaceLine uses your location to record your ride route, speed, and elevation. Location data is only collected while a ride is actively recording.";
-				INFOPLIST_KEY_NSMotionUsageDescription = "RaceLine uses motion sensors to measure lean angle, acceleration, and braking forces during rides.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
