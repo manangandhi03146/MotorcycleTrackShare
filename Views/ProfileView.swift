@@ -1,32 +1,43 @@
 import SwiftUI
+import PhotosUI
 
 struct ProfileView: View {
     @EnvironmentObject private var authService: AuthService
     @EnvironmentObject private var rideStore: RideStore
     @EnvironmentObject private var syncService: SyncService
-    @AppStorage("defaultStorageMode") private var defaultStorageModeRaw: String = StorageMode.localOnly.rawValue
 
     @State private var isLoggingOut = false
+    @State private var showSignOutConfirm = false
     @State private var showDeleteAccountConfirm = false
     @State private var isDeleting = false
     @State private var showDeleteError = false
     @State private var showPrivacyPolicy = false
 
-    private var defaultStorageMode: StorageMode {
-        StorageMode(rawValue: defaultStorageModeRaw) ?? .localOnly
-    }
+    // Inline profile-edit state — only the bio + avatar live on this
+    // tab now. Username, display name, visibility toggles, and the
+    // social-privacy sheet all moved into Settings so the Profile tab
+    // stays focused on the rider's headline identity.
+    @State private var socialProfile: SocialProfile?
+    @State private var loadingProfile = true
+    @State private var savingProfile  = false
+    @State private var profileError: String?
+
+    @State private var bio = ""
+
+    @State private var avatarPickerItem: PhotosPickerItem?
+    @State private var localAvatarImage: UIImage?
+    @State private var avatarPath: String?
+    @State private var avatarUploading = false
+
+    private let socialProfileService = SocialProfileService()
 
     private var profile: UserProfile? { authService.state.profile }
 
     private var identityHeadline: String {
+        if let name = socialProfile?.displayName, !name.isEmpty { return name }
         if let name = profile?.displayName, !name.isEmpty { return name }
         if let email = profile?.email, !email.isEmpty     { return email }
         return "Signed in"
-    }
-
-    private var identitySubtitle: String? {
-        guard let name = profile?.displayName, !name.isEmpty else { return nil }
-        return profile?.email
     }
 
     // MARK: - All-time stats
@@ -55,89 +66,30 @@ struct ProfileView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 0) {
+            VStack(spacing: 24) {
 
-                // Avatar + identity
-                VStack(spacing: 14) {
-                    ZStack {
-                        Circle()
-                            .fill(Color.appSurface2)
-                            .frame(width: 96, height: 96)
-                        Image(systemName: "person.fill")
-                            .font(.system(size: 42, weight: .medium))
-                            .foregroundStyle(Color.appAccent)
-                    }
-                    .padding(.top, 32)
+                // Identity: avatar + name at the top.
+                identityBlock
+                    .padding(.top, 24)
 
-                    VStack(spacing: 6) {
-                        Text(identityHeadline)
-                            .font(.title3.weight(.semibold))
-                            .foregroundStyle(Color.textPrimary)
-                            .lineLimit(1)
+                // Personal bests promoted just under the avatar so it's
+                // the first substantive content the rider sees.
+                personalBestsBlock
 
-                        if let subtitle = identitySubtitle {
-                            Text(subtitle)
-                                .font(.subheadline)
-                                .foregroundStyle(Color.textSecondary)
-                                .lineLimit(1)
-                        }
+                // Bio stays inline — it's a lightweight, expressive field
+                // that reads better here than buried in Settings.
+                bioBlock
 
-                        HStack(spacing: 6) {
-                            Image(systemName: "icloud.fill")
-                                .font(.system(size: 12))
-                            Text("Cloud sync active")
-                                .font(.subheadline)
-                        }
-                        .foregroundStyle(Color.appAccent)
-
-                        if let badge = syncBadge {
-                            Text(badge)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 4)
-                                .background(Color.red)
-                                .clipShape(Capsule())
-                        }
-                    }
+                if isProfileDirty {
+                    saveProfileRow
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.bottom, 28)
 
-                // Personal bests
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("PERSONAL BESTS")
-                        .font(.system(size: 11, weight: .semibold))
-                        .kerning(0.8)
-                        .foregroundStyle(Color.textGhost)
+                if let profileError {
+                    Text(profileError)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.red)
                         .padding(.horizontal, 24)
-
-                    if rideStore.rides.isEmpty {
-                        Text("Record your first ride to see your stats here.")
-                            .font(.subheadline)
-                            .foregroundStyle(Color.textSecondary)
-                            .padding(.horizontal, 24)
-                    } else {
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                            personalBestCard(label: "Max Lean Right", value: allTimeMaxLeanRight > 0 ? String(format: "%.1f°", allTimeMaxLeanRight) : "—", icon: "rotate.right.fill")
-                            personalBestCard(label: "Max Lean Left",  value: allTimeMaxLeanLeft  > 0 ? String(format: "%.1f°", allTimeMaxLeanLeft)  : "—", icon: "rotate.left.fill")
-                            personalBestCard(label: "Max Speed",      value: allTimeMaxSpeedMph  > 0 ? String(format: "%.1f mph", allTimeMaxSpeedMph) : "—", icon: "speedometer")
-                            personalBestCard(label: "Total Distance", value: String(format: "%.1f mi", totalDistanceMi), icon: "road.lanes")
-                        }
-                        .padding(.horizontal, 16)
-
-                        HStack {
-                            Image(systemName: "flag.checkered")
-                                .font(.system(size: 12))
-                            Text("\(totalRides) ride\(totalRides == 1 ? "" : "s") total")
-                                .font(.subheadline)
-                        }
-                        .foregroundStyle(Color.textSecondary)
-                        .padding(.horizontal, 24)
-                    }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.bottom, 28)
 
                 // Account actions
                 VStack(spacing: 10) {
@@ -146,7 +98,12 @@ struct ProfileView: View {
                         isLoading: isLoggingOut,
                         isDestructive: true
                     ) {
-                        Task { await logOut() }
+                        // Sign-out is reversible in the sense that you
+                        // can sign back in, but pending cloud uploads
+                        // stall until you do. A quick confirmation
+                        // catches the tap-through case (e.g., muscle
+                        // memory from another app).
+                        showSignOutConfirm = true
                     }
 
                     Button {
@@ -175,14 +132,17 @@ struct ProfileView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .padding(.top, 12)
 
-                Spacer(minLength: 100)
+                Spacer(minLength: 80)
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) { profileHeader }
         .background(Color.appBg.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
+        .task { await loadSocialProfile() }
+        .onChange(of: avatarPickerItem) { _, newItem in
+            Task { await handleAvatarPick(newItem) }
+        }
         .confirmationDialog("Delete Account?",
                             isPresented: $showDeleteAccountConfirm,
                             titleVisibility: .visible) {
@@ -192,6 +152,16 @@ struct ProfileView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This will permanently delete all your rides, bikes, and account data. This cannot be undone.")
+        }
+        .confirmationDialog("Sign out of RaceLine?",
+                            isPresented: $showSignOutConfirm,
+                            titleVisibility: .visible) {
+            Button("Sign Out", role: .destructive) {
+                Task { await logOut() }
+            }
+            Button("Stay Signed In", role: .cancel) { }
+        } message: {
+            Text("You'll need to sign back in to sync new rides to the cloud. Pending uploads will wait until you return.")
         }
         .alert("Delete Failed", isPresented: $showDeleteError) {
             Button("OK", role: .cancel) { }
@@ -203,11 +173,166 @@ struct ProfileView: View {
         }
     }
 
+    // MARK: - Identity block
+
+    private var identityBlock: some View {
+        VStack(spacing: 16) {
+            avatarPicker
+            HStack(spacing: 6) {
+                Image(systemName: "icloud.fill").font(.system(size: 12))
+                Text(identityHeadline)
+                    .font(.system(size: 15, weight: .semibold))
+                    .lineLimit(1)
+                if let badge = syncBadge {
+                    Text(badge)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.red)
+                        .clipShape(Capsule())
+                }
+            }
+            .foregroundStyle(Color.appAccent)
+        }
+        .padding(.horizontal, 20)
+    }
+
+    private var avatarPicker: some View {
+        PhotosPicker(selection: $avatarPickerItem, matching: .images, photoLibrary: .shared()) {
+            ZStack(alignment: .bottomTrailing) {
+                avatarCircle
+                if avatarUploading {
+                    ZStack {
+                        Circle()
+                            .fill(Color.black.opacity(0.35))
+                        ProgressView()
+                            .tint(.white)
+                    }
+                    .frame(width: 96, height: 96)
+                } else {
+                    ZStack {
+                        Circle()
+                            .fill(Color.appAccent)
+                            .frame(width: 30, height: 30)
+                        Image(systemName: "camera.fill")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                    .offset(x: 2, y: 2)
+                }
+            }
+            .accessibilityLabel("Change profile picture")
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var avatarCircle: some View {
+        let ring = Circle().stroke(Color.appAccent.opacity(0.35), lineWidth: 2)
+        ZStack {
+            Circle()
+                .fill(Color.appSurface2)
+                .frame(width: 96, height: 96)
+            if let localAvatarImage {
+                Image(uiImage: localAvatarImage)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 96, height: 96)
+                    .clipShape(Circle())
+            } else if let path = avatarPath,
+                      let url  = socialProfileService.avatarPublicURL(path: path) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image.resizable().scaledToFill()
+                    default:
+                        Image(systemName: "person.fill")
+                            .font(.system(size: 42, weight: .medium))
+                            .foregroundStyle(Color.appAccent)
+                    }
+                }
+                .frame(width: 96, height: 96)
+                .clipShape(Circle())
+            } else {
+                Image(systemName: "person.fill")
+                    .font(.system(size: 42, weight: .medium))
+                    .foregroundStyle(Color.appAccent)
+            }
+        }
+        .overlay(ring)
+        .frame(width: 96, height: 96)
+    }
+
+    private var bioBlock: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("BIO")
+            TextField("", text: $bio,
+                      prompt: .appPrompt("Sport-touring in the PNW"),
+                      axis: .vertical)
+                .lineLimit(3, reservesSpace: true)
+                .foregroundStyle(Color.textPrimary)
+                .appFieldChrome()
+        }
+        .padding(.horizontal, 20)
+    }
+
+    private var saveProfileRow: some View {
+        PrimaryButton(
+            title: savingProfile ? "Saving…" : "Save Bio",
+            isLoading: savingProfile,
+            isDestructive: false
+        ) {
+            Task { await saveSocialProfile() }
+        }
+        .padding(.horizontal, 24)
+    }
+
+    private var personalBestsBlock: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("PERSONAL BESTS")
+                .padding(.horizontal, 24)
+
+            if rideStore.rides.isEmpty {
+                Text("Record your first ride to see your stats here.")
+                    .font(.subheadline)
+                    .foregroundStyle(Color.textSecondary)
+                    .padding(.horizontal, 24)
+            } else {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                    personalBestCard(label: "Max Lean Right", value: allTimeMaxLeanRight > 0 ? String(format: "%.1f°", allTimeMaxLeanRight) : "—", icon: "rotate.right.fill")
+                    personalBestCard(label: "Max Lean Left",  value: allTimeMaxLeanLeft  > 0 ? String(format: "%.1f°", allTimeMaxLeanLeft)  : "—", icon: "rotate.left.fill")
+                    personalBestCard(label: "Max Speed",      value: allTimeMaxSpeedMph  > 0 ? String(format: "%.1f mph", allTimeMaxSpeedMph) : "—", icon: "speedometer")
+                    personalBestCard(label: "Total Distance", value: String(format: "%.1f mi", totalDistanceMi), icon: "road.lanes")
+                }
+                .padding(.horizontal, 16)
+
+                HStack {
+                    Image(systemName: "flag.checkered")
+                        .font(.system(size: 12))
+                    Text("\(totalRides) ride\(totalRides == 1 ? "" : "s") total")
+                        .font(.subheadline)
+                }
+                .foregroundStyle(Color.textSecondary)
+                .padding(.horizontal, 24)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func sectionHeader(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold))
+            .kerning(0.8)
+            .foregroundStyle(Color.textGhost)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private var profileHeader: some View {
         HStack {
             Text("Profile")
                 .font(.system(size: 34, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.textPrimary)
             Spacer()
             NavigationLink {
                 SettingsView()
@@ -233,6 +358,93 @@ struct ProfileView: View {
         isLoggingOut = true
         await authService.signOut()
         isLoggingOut = false
+    }
+
+    // MARK: - Social profile loading / saving
+
+    private var isProfileDirty: Bool {
+        guard let baseline = socialProfile else { return false }
+        let trimmedBio = bio.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedBio != (baseline.bio ?? "")
+    }
+
+    private func loadSocialProfile() async {
+        guard let uid = authService.userID else {
+            loadingProfile = false
+            return
+        }
+        loadingProfile = true
+        defer { loadingProfile = false }
+        do {
+            let existing = try await socialProfileService.fetchProfile(userID: uid)
+            socialProfile = existing
+            bio        = existing?.bio ?? ""
+            avatarPath = existing?.avatarPath
+        } catch {
+            guard !isCancellationError(error) else { return }
+            profileError = "Couldn't load your profile."
+        }
+    }
+
+    private func saveSocialProfile() async {
+        guard let uid = authService.userID else { return }
+        savingProfile = true
+        profileError  = nil
+        defer { savingProfile = false }
+
+        let trimmedBio = bio.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        do {
+            let updated = try await socialProfileService.updateProfile(
+                userID: uid,
+                SocialProfileUpdate(
+                    bio: trimmedBio.isEmpty ? nil : trimmedBio,
+                    avatarPath: avatarPath
+                )
+            )
+            socialProfile = updated
+        } catch let e as SocialError {
+            profileError = e.errorDescription
+        } catch {
+            profileError = "Couldn't save profile. Try again."
+        }
+    }
+
+    // MARK: - Avatar pick / upload
+
+    private func handleAvatarPick(_ item: PhotosPickerItem?) async {
+        guard let item else { return }
+        guard let uid = authService.userID else {
+            profileError = "Sign in first before changing your avatar."
+            return
+        }
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self) else {
+                profileError = "Couldn't read that image. Pick a different photo."
+                return
+            }
+            guard let image = UIImage(data: data) else {
+                profileError = "Couldn't decode that image. Try a JPEG or PNG."
+                return
+            }
+            let resized = image.resized(toMaxDimension: 512) ?? image
+            localAvatarImage = resized
+            avatarUploading = true
+            defer { avatarUploading = false }
+            let path = try await socialProfileService.uploadAvatar(resized, userID: uid)
+            avatarPath = path
+            let updated = try await socialProfileService.updateProfile(
+                userID: uid,
+                SocialProfileUpdate(avatarPath: path)
+            )
+            socialProfile = updated
+            profileError = nil
+        } catch let e as SocialError {
+            profileError = e.errorDescription
+        } catch {
+            profileError = "Couldn't upload avatar: \(error.localizedDescription)"
+            print("Avatar upload error:", error)
+        }
     }
 
     private func personalBestCard(label: String, value: String, icon: String) -> some View {
@@ -265,6 +477,27 @@ struct ProfileView: View {
             showDeleteError = true
         }
         isDeleting = false
+    }
+}
+
+// MARK: - Image helpers
+
+private extension UIImage {
+    /// Aspect-fit downscale that keeps the larger dimension at `maxDim`
+    /// and preserves aspect ratio. Returns nil if the render fails.
+    func resized(toMaxDimension maxDim: CGFloat) -> UIImage? {
+        let width  = size.width
+        let height = size.height
+        let larger = max(width, height)
+        guard larger > maxDim else { return self }
+        let scale = maxDim / larger
+        let newSize = CGSize(width: width * scale, height: height * scale)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.opaque = false
+        format.scale  = 1
+        return UIGraphicsImageRenderer(size: newSize, format: format).image { _ in
+            draw(in: CGRect(origin: .zero, size: newSize))
+        }
     }
 }
 

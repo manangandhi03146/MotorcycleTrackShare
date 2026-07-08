@@ -11,11 +11,27 @@ Run in this exact order:
 1. `migrations/001_schema.sql` — Creates all tables and triggers
 2. `migrations/002_rls_policies.sql` — Enables RLS and creates access policies
 3. `migrations/003_storage_policies.sql` — Creates storage bucket policies
+4. `migrations/004_trigger_hardening.sql` — Hardens auth trigger for OAuth flows
+5. `migrations/005_cloud_ride_limit.sql` — Adds the 10-ride free cloud cap
+6. `migrations/006_social.sql` — Phase 3: groups, challenges, follows, shared routes, activity feed, privacy
+7. `migrations/007_social_rls.sql` — RLS policies + helper functions for Phase 3
+8. `migrations/008_group_ownership_limit.sql` — Enforce 5-group free ownership cap via trigger
+9. `migrations/009_group_owner_default.sql` — Sets DEFAULT auth.uid() on groups.owner_id and re-seeds the INSERT policy (fixes a 42501 that could occur if 007 didn't fully apply)
+10. `migrations/010_create_group_rpc.sql` — Adds a SECURITY DEFINER `create_group` RPC that the client uses instead of a direct INSERT (bypasses the RLS puzzle we hit on the direct path)
+11. `migrations/011_create_group_bypass_rls.sql` — Adds `SET row_security = off` to the create_group RPC so RLS is disabled inside its execution scope (fixes 42501 that persisted through migration 010 on some Supabase Cloud projects)
+12. `migrations/012_group_owner_trigger.sql` — Trigger-based fallback: BEFORE INSERT trigger forces owner_id := auth.uid(), INSERT policy simplifies to authenticated-only. The app now uses a direct INSERT (no RPC), so PostgREST schema-cache issues stop blocking group creation.
+13. `migrations/013_group_insert_policy_public.sql` — Rescopes the groups INSERT policy from `TO authenticated` to `TO public` (with `auth.uid() IS NOT NULL` inside WITH CHECK). Diagnosed after seeing PostgREST-mediated INSERTs fail RLS despite a `WITH CHECK (TRUE)` policy — the role clause wasn't matching for reasons we couldn't identify. Same practical effect (signed-in-only insertion via the trigger + WITH CHECK), just doesn't rely on the connection role name.
+14. `migrations/014_groups_full_reset.sql` — **Idempotent full reset of `groups` + `group_members`**: wipes every leftover policy/trigger/function from 006–013, re-grants table privileges to `authenticated`/`service_role`, and rebuilds the whole stack from scratch. Run this any time group creation is misbehaving — it supersedes everything above for these two tables.
+15. `migrations/015_groups_fix_recursion.sql` — Fixes 42P17 "infinite recursion detected in policy" by moving every cross-row membership check into SECURITY DEFINER helper functions (`is_group_member`, `is_group_admin`, `is_group_public`) with `row_security = off`. The policies now call the helpers instead of doing inline `EXISTS FROM group_members`, which would otherwise re-trigger the policy on the inner SELECT.
+16. `migrations/016_groups_select_owner.sql` — Adds `owner_id = auth.uid()` to the `groups_select_visible` policy so the RETURNING read from `.insert().select().single()` succeeds for private groups the caller just created. This is the migration that finally unblocked group creation end-to-end.
+17. `migrations/017_social_polish.sql` — Feed + groups + challenge leaderboard polish: (a) adds `bikeAdded` to the allowed `activity_feed.kind` values plus `bike` as a subject kind; (b) adds an AFTER DELETE trigger on `group_members` that auto-deletes empty groups and transfers ownership to the longest-tenured remaining member when the owner leaves; (c) adds a `mutual_follows(a, b)` helper + SELECT policy so a rider can see their mutual followers' progress on the challenge leaderboard and see mutual followers' profiles in the Riders list.
+18. `migrations/018_avatar_storage.sql` — Creates the `avatars` PUBLIC bucket + owner-only write policies. Reads are handled by the bucket's `public = TRUE` flag (URLs work without a SELECT policy) — we intentionally do not grant SELECT so clients can't enumerate everyone's avatars via `list()`.
+19. `migrations/019_group_rides_phase4.sql` — Phase 4 group ride navigation. Extends `group_rides` with destination/waypoints/status/visibility/live_location_enabled, adds `group_ride_participants` and `group_ride_live_locations` tables, and adds `rides.group_ride_id` for post-ride linkage. RLS gates ride visibility by group membership, participants by group membership, and live locations by participation. Also adds an AFTER INSERT trigger on `group_rides` so the creator is auto-joined as a participant.
 
 Then:
-4. Create storage buckets manually (see below)
-5. Deploy Edge Functions (see below)
-6. Configure Auth redirect URLs (see below)
+20. Create storage buckets manually (see below)
+21. Deploy Edge Functions (see below)
+22. Configure Auth redirect URLs (see below)
 
 ---
 

@@ -4,7 +4,7 @@ import UIKit
 
 struct ContentView: View {
     private enum Tab: Hashable {
-        case calendar, ride, garage, maintenance, profile
+        case calendar, ride, garage, social, profile
     }
 
     @EnvironmentObject private var authService: AuthService
@@ -19,7 +19,15 @@ struct ContentView: View {
     @StateObject private var maintenanceStore = MaintenanceStore()
     @StateObject private var syncService      = SyncService()
     @StateObject private var motorcycleCatalog = MotorcycleCatalogService()
+    @StateObject private var proFeatures      = ProFeatureManager()
+    @StateObject private var cloudBackup      = CloudBackupService()
+    @StateObject private var customShareCards = CustomShareCardService()
     @State private var selectedTab: Tab = .ride
+
+    // Phase 4 — banner shown on the recording screen when the ride
+    // was started from a group ride, populated by the notification
+    // observer below.
+    @State private var groupRideBanner: String? = nil
 
     // Map state
     @State private var position: MapCameraPosition = .region(
@@ -52,24 +60,39 @@ struct ContentView: View {
     @State private var showRideDayPicker        = false
     @State private var scrollTargetRideID: UUID?
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         Group {
-            if selectedTab == .ride {
-                rideRecordingView
-            } else if selectedTab == .garage {
-                GarageView(garageStore: garageStore, catalogService: motorcycleCatalog)
-                    .environmentObject(rideStore)
-            } else if selectedTab == .maintenance {
-                MaintenanceView(maintenanceStore: maintenanceStore, garageStore: garageStore)
-            } else if selectedTab == .profile {
-                NavigationStack {
-                    ProfileView()
-                        .environmentObject(rideStore)
-                        .environmentObject(syncService)
+            // Wrapped in an outer container so the transition applies
+            // to whichever branch is currently in the view hierarchy.
+            // Each branch is tagged with `.id(selectedTab)` so SwiftUI
+            // treats a swap as a remove-and-insert (which fires the
+            // transition) rather than an in-place mutation.
+            ZStack {
+                Group {
+                    if selectedTab == .ride {
+                        rideRecordingView
+                    } else if selectedTab == .garage {
+                        GarageView(garageStore: garageStore, catalogService: motorcycleCatalog)
+                            .environmentObject(rideStore)
+                            .environmentObject(maintenanceStore)
+                    } else if selectedTab == .social {
+                        SocialHubView()
+                    } else if selectedTab == .profile {
+                        NavigationStack {
+                            ProfileView()
+                                .environmentObject(rideStore)
+                                .environmentObject(syncService)
+                        }
+                    } else {
+                        calendarView
+                    }
                 }
-            } else {
-                calendarView
+                .id(selectedTab)
+                .transition(NavTransition.tabSwap(reduceMotion: reduceMotion))
             }
+            .animation(reduceMotion ? nil : NavTransition.animation, value: selectedTab)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             bottomNavigationBar
@@ -94,6 +117,17 @@ struct ContentView: View {
             motion.start(hz: samplingRateHz)
             syncService.configure(rideStore: rideStore, garageStore: garageStore, authService: authService)
             syncService.startMonitoring()
+        }
+        .environmentObject(proFeatures)
+        .environmentObject(cloudBackup)
+        .environmentObject(customShareCards)
+        // Group ride "Start Ride" fires this notification. Kept at the
+        // outer body so the observer survives tab switches — attaching
+        // it to `rideRecordingView` (which is only rendered on the
+        // Rides tab) meant the notification vanished when the user was
+        // on Social.
+        .onReceive(NotificationCenter.default.publisher(for: .raceLineStartGroupRideRecording)) { note in
+            handleGroupRideRecordingNotification(note)
         }
     }
 
@@ -224,6 +258,16 @@ struct ContentView: View {
 
                 // Safety disclaimer during recording
                 if recorder.isRecording {
+                    if let banner = groupRideBanner {
+                        Label(banner, systemImage: "person.3.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color.appAccent.opacity(0.85))
+                            .clipShape(Capsule())
+                            .padding(.bottom, 4)
+                    }
                     Text("Do not interact with the app while riding.")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(Color.textGhost)
@@ -277,7 +321,10 @@ struct ContentView: View {
         .onChange(of: recorder.summary) { _, _ in maybePresentSavePrompt() }
         .onChange(of: recorder.fileURL) { _, _ in maybePresentSavePrompt() }
         .onChange(of: recorder.isRecording) { _, isRec in
-            if !isRec { maybePresentSavePrompt() }
+            if !isRec {
+                maybePresentSavePrompt()
+                groupRideBanner = nil
+            }
         }
         .alert("Ride too short to save", isPresented: $showTooShortAlert) {
             Button("OK", role: .cancel) { }
@@ -340,6 +387,39 @@ struct ContentView: View {
         UIApplication.shared.isIdleTimerDisabled = true
     }
 
+    /// Bridge from the raw Notification into typed args so the
+    /// `.onReceive` closure body stays trivial (and doesn't blow up
+    /// the SwiftUI type-checker on the enclosing view).
+    private func handleGroupRideRecordingNotification(_ note: Notification) {
+        let info    = note.userInfo
+        let rideID  = info?["rideID"] as? UUID
+        let rawTitle = info?["title"] as? String
+        let title   = (rawTitle?.isEmpty == false) ? rawTitle! : "group ride"
+        handleGroupRideRecordingRequest(rideID: rideID, title: title)
+    }
+
+    /// Reacts to the .raceLineStartGroupRideRecording notification
+    /// posted by GroupRideDetailView. Switches to the Rides tab and
+    /// begins recording (defaulting to street) so the user is dropped
+    /// straight into the live recording UI with timer, distance, and
+    /// lean angle ticking.
+    private func handleGroupRideRecordingRequest(rideID: UUID?, title: String) {
+        // Always switch to Rides so the notification is observable to
+        // the user even if the recording can't start.
+        selectedTab = .ride
+
+        if recorder.isRecording {
+            groupRideBanner = "Recording as part of \(title)"
+            return
+        }
+        if location.isPermissionBlocked {
+            showLocationDeniedAlert = true
+            return
+        }
+        beginRide(rideType: .street)
+        groupRideBanner = "Recording as part of \(title)"
+    }
+
     private func saveRide() {
         guard let s = recorder.summary, let log = recorder.fileURL else {
             showNameSheet = false
@@ -380,16 +460,53 @@ struct ContentView: View {
         // Cloud sync if enabled
         if mode.isCloudEnabled, let userID = authService.userID {
             let photo = pendingRidePhoto
+            let localRideID = savedRide.id
+            let groupRideIDString = UserDefaults.standard.string(forKey: "activeGroupRideID") ?? ""
             Task {
                 await syncService.syncNow()
                 _ = savedRide
                 _ = photo
+                // Phase 4 — if the user tapped "Start RaceLine Recording"
+                // from a group ride, attach the group_ride_id to the
+                // uploaded ride row so we can show recap connections later.
+                if !groupRideIDString.isEmpty,
+                   let groupRideID = UUID(uuidString: groupRideIDString) {
+                    await Self.attachGroupRide(groupRideID: groupRideID,
+                                               localRideID: localRideID,
+                                               userID: userID)
+                    // The synchronous clear below (unconditional) already
+                    // resets activeGroupRideID for the next ride.
+                }
             }
         }
+
+        // Phase 3 — no ride-completion feed emit. Per product spec, the
+        // Social feed only surfaces route shares and new bike additions.
+        // Users share a ride to the feed explicitly via the Share button.
+
+        // Phase 4 — always clear the active group ride flag after save,
+        // even for local-only rides that don't hit the cloud attach path.
+        // Otherwise the next unrelated recording would inherit the id.
+        UserDefaults.standard.removeObject(forKey: "activeGroupRideID")
+        groupRideBanner = nil
 
         rideStore.load()
         resetPendingSave()
         showNameSheet = false
+    }
+
+    /// Once the cloud-synced ride row exists, tag it with the group ride
+    /// id so recap views can link back. Best-effort — swallowed if the
+    /// row hasn't uploaded yet or the auth session is stale.
+    private static func attachGroupRide(groupRideID: UUID, localRideID: UUID, userID: UUID) async {
+        struct Patch: Encodable { let group_ride_id: String }
+        let client = SupabaseManager.shared.client
+        _ = try? await client
+            .from("rides")
+            .update(Patch(group_ride_id: groupRideID.uuidString.lowercased()))
+            .eq("local_id", value: localRideID.uuidString)
+            .eq("user_id",  value: userID.uuidString)
+            .execute()
     }
 
     private func resetPendingSave() {
@@ -665,8 +782,8 @@ struct ContentView: View {
 
     private var bottomNavigationBar: some View {
         HStack(spacing: 0) {
-            navBarButton(title: "Service", tab: .maintenance) { isActive in
-                Image(systemName: "wrench.and.screwdriver")
+            navBarButton(title: "Social", tab: .social) { isActive in
+                Image(systemName: "person.2.fill")
                     .font(.system(size: 20, weight: isActive ? .semibold : .regular))
                     .frame(height: 22)
             }
@@ -851,6 +968,18 @@ private struct RideDetailScreen: View {
     @State private var showingShareCover    = false
     @State private var shareInitialRideID: UUID?
 
+    /// Ride name used in destructive dialogs. Falls back to a
+    /// neutral phrase when the ride hasn't been named yet.
+    private var rideNameForDialog: String {
+        let trimmed = (draftName.isEmpty ? ride.name : draftName)
+            .trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? "this ride" : trimmed
+    }
+    @State private var showAnalyzeSheet     = false
+    @State private var showExportFormatDialog = false
+    @State private var showShareOptionsDialog = false
+    @State private var showShareRouteSheet    = false
+
     init(ride: SavedRide, initialPhoto: UIImage?, bikes: [GarageBike],
          onExportJSONL: (() -> URL?)?,
          onClose: @escaping () -> Void,
@@ -909,8 +1038,7 @@ private struct RideDetailScreen: View {
                     .clipShape(Capsule())
 
                     Button {
-                        shareInitialRideID = ride.id
-                        showingShareCover = true
+                        showShareOptionsDialog = true
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "square.and.arrow.up")
@@ -1031,6 +1159,8 @@ private struct RideDetailScreen: View {
                         }
                         .buttonStyle(.plain)
 
+                        analyzeRideButton
+
                         Rectangle().fill(Color.appDivider).frame(height: 1)
 
                         Text(dateTimeText(ride.createdAt))
@@ -1105,15 +1235,17 @@ private struct RideDetailScreen: View {
             }
             .ignoresSafeArea()
         }
-        .alert("Delete this ride?", isPresented: $showDeleteConfirm) {
-            Button("Delete", role: .destructive) {
+        .alert("Delete \(rideNameForDialog)?", isPresented: $showDeleteConfirm) {
+            Button("Delete Ride", role: .destructive) {
                 switch onDelete() {
                 case .success: onClose()
                 case .notFound, .deleteFailed: showDeleteFailedAlert = true
                 }
             }
             Button("Cancel", role: .cancel) { }
-        } message: { Text("This cannot be undone.") }
+        } message: {
+            Text("This permanently removes \"\(rideNameForDialog)\" and its telemetry. This cannot be undone.")
+        }
         .alert("Could not delete ride", isPresented: $showDeleteFailedAlert) { Button("OK", role: .cancel) { } }
             message: { Text("Please try again.") }
         .alert("Could not save photo", isPresented: $showPhotoSaveFailedAlert) { Button("OK", role: .cancel) { } }
@@ -1122,6 +1254,41 @@ private struct RideDetailScreen: View {
             message: { Text("The ride file could not be exported.") }
         .sheet(isPresented: $showExportSheet) {
             if let url = exportURL { ActivityView(activityItems: [url]) }
+        }
+        .sheet(isPresented: $showAnalyzeSheet) {
+            AnalyzeRideView(
+                ride: ride,
+                telemetryURL: rideStore.telemetryURL(for: ride),
+                onRequestExport: { showExportFormatDialog = true }
+            )
+            .environmentObject(rideStore)
+            .presentationDetents([.large])
+        }
+        .confirmationDialog("Export Ride Data",
+                            isPresented: $showExportFormatDialog,
+                            titleVisibility: .visible) {
+            Button("CSV (samples)") { runExport(format: .csv) }
+            Button("GPX (route)")   { runExport(format: .gpx) }
+            Button("JSON (full ride)") { runExport(format: .json) }
+            Button("Cancel", role: .cancel) { }
+        }
+        .confirmationDialog("Share Ride",
+                            isPresented: $showShareOptionsDialog,
+                            titleVisibility: .visible) {
+            Button("Share Card") {
+                shareInitialRideID = ride.id
+                showingShareCover = true
+            }
+            Button("Share Route to Feed") {
+                showShareRouteSheet = true
+            }
+            Button("Cancel", role: .cancel) { }
+        }
+        .sheet(isPresented: $showShareRouteSheet) {
+            ShareRouteSheet(ride: ride)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.hidden)
+                .interactiveDismissDisabled(true)
         }
         .fullScreenCover(isPresented: $showingShareCover) {
             NavigationStack {
@@ -1144,6 +1311,68 @@ private struct RideDetailScreen: View {
                     }
                 }
             }
+        }
+    }
+
+    private var analyzeRideButton: some View {
+        Button {
+            showAnalyzeSheet = true
+        } label: {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.appAccent.opacity(0.15))
+                        .frame(width: 44, height: 44)
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(Color.appAccent)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Analyze Ride")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Color.textPrimary)
+                    Text("AI summary, deeper stats, and safety notes")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.textSecondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.textTertiary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(Color.appSurface2)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.appAccent.opacity(0.35), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Runs a multi-format export via `RideExportService` and presents the
+    /// system share sheet on success. Falls back to the same failure alert
+    /// the legacy JSONL export uses.
+    private func runExport(format: RideExportFormat) {
+        let service = RideExportService()
+        let samplesProvider: () -> [RideSample] = {
+            guard let url = rideStore.telemetryURL(for: ride) else { return [] }
+            return RideSampleLoader.load(from: url)
+        }
+        do {
+            let url = try service.export(
+                ride: ride,
+                route: ride.route,
+                samples: samplesProvider(),
+                format: format
+            )
+            exportURL = url
+            showExportSheet = true
+        } catch {
+            showExportFailedAlert = true
         }
     }
 

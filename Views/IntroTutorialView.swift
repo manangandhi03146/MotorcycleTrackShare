@@ -1,12 +1,21 @@
-import CoreLocation
-import CoreMotion
 import SwiftUI
 import UserNotifications
 
-/// First-launch walkthrough. Explains what RaceLine does and primes the
-/// user for the system permission prompts that follow. Tracks completion
-/// in `UserDefaults` under `hasSeenIntroTutorial` so it only appears once,
-/// but the Settings screen has a row to re-show it on demand.
+/// First-launch walkthrough. Explains what RaceLine does and primes the user
+/// for the system permission prompts that follow.
+///
+/// Permission handling follows App Review guideline 5.1.1(iv): each priming
+/// page explains *why* a permission is needed, and the page's single forward
+/// button ("Continue") triggers the real system prompt. There is deliberately
+/// no "Allow" wording on the button and no exit/skip control that would let the
+/// user bypass the prompt — tapping Continue always proceeds to the request.
+///
+/// Completion is tracked in `UserDefaults` under `hasSeenIntroTutorial` so it
+/// only appears once, but the Settings screen has a row to re-show it on demand.
+///
+/// Note: lean angle, acceleration, and braking come from `CMMotionManager`
+/// device-motion, which requires **no** authorization — so there is no
+/// Motion & Fitness prompt here and the app does not declare that permission.
 struct IntroTutorialView: View {
     /// Called when the user finishes the tutorial (taps Get Started on the
     /// last page). The caller is responsible for setting the
@@ -15,80 +24,63 @@ struct IntroTutorialView: View {
 
     @State private var currentPage = 0
 
+    /// Retained for the view's lifetime so the location permission dialog
+    /// reliably presents — a locally-scoped `CLLocationManager` can deallocate
+    /// before the system prompt appears. `requestPermission()` is a no-op once
+    /// the user has already decided.
+    @StateObject private var locationService = LocationService()
+
     private static let pages: [IntroPage] = [
         IntroPage(
             icon: "__sportbike__",
             title: "Welcome to RaceLine",
             body: "Turn your phone into a motorcycle telemetry rig. Record street rides and track days, then analyze speed, lean angle, GPS, and more.",
-            actionLabel: nil
+            permission: nil
         ),
         IntroPage(
             icon: "speedometer",
             title: "Track every ride",
             body: "Tap Start Ride and RaceLine records your route, speed, elevation, lean angles, hard braking events, and aggressive acceleration in real time.",
-            actionLabel: nil
+            permission: nil
         ),
         IntroPage(
             icon: "wrench.and.screwdriver.fill",
             title: "Manage your bikes",
             body: "Add the bikes in your garage, tag each ride to the one you took out, and log maintenance with mileage-based reminders.",
-            actionLabel: nil
+            permission: nil
         ),
         IntroPage(
             icon: "location.fill",
             title: "Location access",
-            body: "RaceLine needs your location while you ride to capture route, speed, and elevation. Location is only collected while a ride is actively recording — never in the background.",
-            actionLabel: "Allow Location"
-        ),
-        IntroPage(
-            icon: "gyroscope",
-            title: "Motion access",
-            body: "Lean angle, acceleration, and braking detection use your phone's motion sensors. No tracking happens outside of an active ride.",
-            actionLabel: "Allow Motion"
+            body: "RaceLine needs your location while you ride to capture route, speed, and elevation. Location is only collected while a ride is actively recording — never in the background. Tap Continue to grant access.",
+            permission: .location
         ),
         IntroPage(
             icon: "bell.badge.fill",
             title: "Maintenance reminders",
-            body: "Allow notifications so RaceLine can remind you when an oil change, tire swap, or service is due. Optional — you can change this anytime.",
-            actionLabel: "Allow Notifications"
+            body: "RaceLine can remind you when an oil change, tire swap, or service is due. Tap Continue to choose whether to allow notifications.",
+            permission: .notifications
         ),
         IntroPage(
             icon: "checkmark.seal.fill",
             title: "You're all set",
             body: "Sign in with Apple or Google to back up your rides and sync them across devices. Let's ride.",
-            actionLabel: nil
+            permission: nil
         ),
     ]
+
+    private var isLastPage: Bool { currentPage >= Self.pages.count - 1 }
 
     var body: some View {
         ZStack {
             Color.appBg.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                // Skip
-                HStack {
-                    Spacer()
-                    if currentPage < Self.pages.count - 1 {
-                        Button("Skip") { finish() }
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundStyle(Color.textSecondary)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                            .frame(minHeight: 44)
-                            .contentShape(Rectangle())
-                    } else {
-                        Color.clear.frame(width: 44, height: 44)
-                    }
-                }
-                .padding(.horizontal, 12)
-
                 // Paged content
                 TabView(selection: $currentPage) {
                     ForEach(Array(Self.pages.enumerated()), id: \.offset) { index, page in
-                        IntroPageView(page: page) {
-                            handleAction(for: page)
-                        }
-                        .tag(index)
+                        IntroPageView(page: page)
+                            .tag(index)
                     }
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
@@ -107,18 +99,23 @@ struct IntroTutorialView: View {
                 .padding(.top, 8)
                 .padding(.bottom, 16)
 
-                // Primary action
-                PrimaryButton(title: currentPage == Self.pages.count - 1 ? "Get Started" : "Continue") {
+                // Primary action. On a permission page this fires the system
+                // prompt *before* advancing, so the user always proceeds to the
+                // permission request (guideline 5.1.1(iv)).
+                PrimaryButton(title: isLastPage ? "Get Started" : "Continue") {
                     advance()
                 }
                 .padding(.horizontal, 20)
+                .padding(.top, 8)
                 .padding(.bottom, 24)
             }
         }
     }
 
     private func advance() {
-        if currentPage >= Self.pages.count - 1 {
+        requestPermissionIfNeeded(for: Self.pages[currentPage])
+
+        if isLastPage {
             finish()
         } else {
             withAnimation(.easeInOut(duration: 0.25)) {
@@ -132,32 +129,17 @@ struct IntroTutorialView: View {
         onFinish()
     }
 
-    private func handleAction(for page: IntroPage) {
-        switch page.actionLabel {
-        case "Allow Location":
-            requestLocation()
-        case "Allow Motion":
-            requestMotion()
-        case "Allow Notifications":
-            Task { await requestNotifications() }
-        default:
-            break
-        }
-    }
-
     // MARK: - Permission requests
 
-    private func requestLocation() {
-        let manager = CLLocationManager()
-        manager.requestWhenInUseAuthorization()
-    }
-
-    private func requestMotion() {
-        // iOS only shows the motion prompt the first time CoreMotion is actually
-        // queried. CMMotionActivityManager triggers the system prompt cleanly.
-        guard CMMotionActivityManager.isActivityAvailable() else { return }
-        let manager = CMMotionActivityManager()
-        manager.queryActivityStarting(from: Date(), to: Date(), to: .main) { _, _ in }
+    private func requestPermissionIfNeeded(for page: IntroPage) {
+        switch page.permission {
+        case .location:
+            locationService.requestPermission()
+        case .notifications:
+            Task { await requestNotifications() }
+        case nil:
+            break
+        }
     }
 
     private func requestNotifications() async {
@@ -168,17 +150,22 @@ struct IntroTutorialView: View {
 
 // MARK: - Page model + view
 
+private enum IntroPermission {
+    case location
+    case notifications
+}
+
 private struct IntroPage {
     let icon: String
     let title: String
     let body: String
-    /// Optional inline call-to-action that triggers a system permission prompt.
-    let actionLabel: String?
+    /// When set, tapping "Continue" on this page fires the matching system
+    /// permission prompt before advancing to the next page.
+    let permission: IntroPermission?
 }
 
 private struct IntroPageView: View {
     let page: IntroPage
-    let onActionTapped: () -> Void
 
     var body: some View {
         VStack(spacing: 24) {
@@ -210,22 +197,6 @@ private struct IntroPageView: View {
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 32)
-            }
-
-            if let actionLabel = page.actionLabel {
-                Button(action: onActionTapped) {
-                    Text(actionLabel)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Color.appAccent)
-                        .padding(.horizontal, 22)
-                        .padding(.vertical, 12)
-                        .frame(minHeight: 44)
-                        .background(Color.appAccent.opacity(0.12))
-                        .clipShape(Capsule())
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .padding(.top, 4)
             }
 
             Spacer(minLength: 0)

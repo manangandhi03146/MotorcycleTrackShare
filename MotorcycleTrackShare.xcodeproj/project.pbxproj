@@ -599,7 +599,6 @@
 				INFOPLIST_KEY_CFBundleDisplayName = RaceLine;
 				INFOPLIST_KEY_CFBundleName = RaceLine;
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "RaceLine uses your location to record your ride route, speed, and elevation. Location data is only collected while a ride is actively recording.";
-				INFOPLIST_KEY_NSMotionUsageDescription = "RaceLine uses motion sensors to measure lean angle, acceleration, and braking forces during rides.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -614,7 +613,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -633,7 +632,6 @@
 				INFOPLIST_KEY_CFBundleDisplayName = RaceLine;
 				INFOPLIST_KEY_CFBundleName = RaceLine;
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "RaceLine uses your location to record your ride route, speed, and elevation. Location data is only collected while a ride is actively recording.";
-				INFOPLIST_KEY_NSMotionUsageDescription = "RaceLine uses motion sensors to measure lean angle, acceleration, and braking forces during rides.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -648,7 +646,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
@@ -666,7 +664,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1";
+				TARGETED_DEVICE_FAMILY = 1;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MotorcycleTrackShare.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MotorcycleTrackShare";
 			};
 			name = Debug;
@@ -685,7 +683,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1";
+				TARGETED_DEVICE_FAMILY = 1;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MotorcycleTrackShare.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MotorcycleTrackShare";
 			};
 			name = Release;
@@ -702,7 +700,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1";
+				TARGETED_DEVICE_FAMILY = 1;
 				TEST_TARGET_NAME = MotorcycleTrackShare;
 			};
 			name = Debug;
@@ -719,7 +717,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1";
+				TARGETED_DEVICE_FAMILY = 1;
 				TEST_TARGET_NAME = MotorcycleTrackShare;
 			};
 			name = Release;
