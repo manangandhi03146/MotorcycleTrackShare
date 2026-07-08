@@ -142,9 +142,12 @@ struct SocialHubView: View {
 struct ActivityFeedTab: View {
     @EnvironmentObject private var authService: AuthService
     @EnvironmentObject private var cache: SocialHubCache
+    @EnvironmentObject private var moderation: ModerationService
 
     @State private var state: LoadState = .idle
     @State private var errorMessage: String?
+    @State private var reportTarget: ActivityEvent?
+    @State private var blockTarget: UUID?
 
     private let feedService = ActivityFeedService()
     private let profileService = SocialProfileService()
@@ -188,6 +191,20 @@ struct ActivityFeedTab: View {
                     // refresh.
                     ForEach(cache.feedEvents) { event in
                         feedRow(for: event)
+                            .contextMenu {
+                                if event.actorID != authService.userID {
+                                    Button {
+                                        reportTarget = event
+                                    } label: {
+                                        Label("Report", systemImage: "flag")
+                                    }
+                                    Button(role: .destructive) {
+                                        blockTarget = event.actorID
+                                    } label: {
+                                        Label("Block Rider", systemImage: "hand.raised")
+                                    }
+                                }
+                            }
                     }
                 }
             }
@@ -197,6 +214,26 @@ struct ActivityFeedTab: View {
         }
         .refreshable { await reload(force: true) }
         .task { await reload(force: false) }
+        .sheet(item: $reportTarget) { event in
+            ReportSheet(contentType: .activity, contentID: event.id, reportedUserID: event.actorID)
+        }
+        .confirmationDialog("Block this rider?", isPresented: Binding(
+            get: { blockTarget != nil },
+            set: { if !$0 { blockTarget = nil } }
+        ), titleVisibility: .visible) {
+            Button("Block", role: .destructive) {
+                if let uid = blockTarget {
+                    Task {
+                        try? await moderation.block(uid)
+                        await reload(force: true)
+                    }
+                }
+                blockTarget = nil
+            }
+            Button("Cancel", role: .cancel) { blockTarget = nil }
+        } message: {
+            Text("You won't see their content and they won't see yours. You can unblock them in Settings.")
+        }
     }
 
     // Wrap in a NavigationLink when the event kind has a tappable target.

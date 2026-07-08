@@ -57,16 +57,6 @@ final class ProFeatureManager: ObservableObject {
     /// groups is unlimited on all tiers.
     static let freeGroupLimit: Int = 5
 
-    /// During Phase 2 development every feature is exposed to free users so the
-    /// app remains fully usable while payment infrastructure lands later.
-    private static let phaseTwoExposedToFree: Set<ProFeature> = [
-        .advancedAnalytics,
-        .aiRideSummary,
-        .exportData,
-        .customShareCards,
-        .cloudBackup,
-    ]
-
     @Published private(set) var tier: ProTier
 
     init(tier: ProTier = .free) {
@@ -77,17 +67,15 @@ final class ProFeatureManager: ObservableObject {
 
     var isPro: Bool { tier == .pro }
 
-    /// Whether the given feature is currently available to the user.
-    /// Phase 2 keeps most features unlocked for free during rollout; the
-    /// bike limit is the one hard cap enforced today.
+    /// Every feature is currently free. Monetization will re-gate here later
+    /// via `applyEntitlement(_:)` — no call site needs to change.
     func hasAccess(to feature: ProFeature) -> Bool {
-        if isPro { return true }
-        return Self.phaseTwoExposedToFree.contains(feature)
+        return true
     }
 
-    /// The free-tier bike cap, or nil if unlimited.
+    /// The bike cap, or nil if unlimited. Unlimited for everyone right now.
     func bikeLimit() -> Int? {
-        isPro ? nil : Self.freeBikeLimit
+        nil
     }
 
     /// Whether the user can add another bike given how many they already have.
@@ -96,9 +84,10 @@ final class ProFeatureManager: ObservableObject {
         return currentCount < limit
     }
 
-    /// The free-tier group ownership cap, or nil if unlimited.
+    /// The group ownership cap, or nil if unlimited. Unlimited for everyone
+    /// right now (note: a server-side cap may still apply until lifted in the DB).
     func groupLimit() -> Int? {
-        isPro ? nil : Self.freeGroupLimit
+        nil
     }
 
     /// Whether the user can create another group given how many they already own.

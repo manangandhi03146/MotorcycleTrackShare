@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- RaceLine does not track users across apps or websites owned by other companies. -->
+    <key>NSPrivacyTracking</key>
+    <false/>
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+    <!-- The App Store privacy "nutrition label" is configured in App Store Connect.
+         This array is intentionally left empty here to avoid conflicting declarations. -->
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array/>
+    <!-- Required Reason APIs used by RaceLine's own code.
+         Only UserDefaults is used (onboarding flag, settings, cached UI state). -->
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array>
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>CA92.1</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

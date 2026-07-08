@@ -14,14 +14,12 @@ struct GarageView: View {
     @ObservedObject var catalogService: MotorcycleCatalogService
     @EnvironmentObject private var authService: AuthService
     @EnvironmentObject private var rideStore: RideStore
-    @EnvironmentObject private var proFeatures: ProFeatureManager
     @EnvironmentObject private var maintenanceStore: MaintenanceStore
     @AppStorage("cloudSyncEnabled") private var cloudSyncEnabled: Bool = false
 
     @State private var showAddBikeSheet = false
     @State private var addBikeErrorMessage: String?
     @State private var expandedBikeID: UUID?
-    @State private var showBikeLimitSheet = false
 
     var body: some View {
         NavigationStack {
@@ -115,14 +113,6 @@ struct GarageView: View {
             } message: {
                 Text(addBikeErrorMessage ?? "The bike could not be saved.")
             }
-            .sheet(isPresented: $showBikeLimitSheet) {
-                ProUpgradeSheet(
-                    feature: .unlimitedBikes,
-                    contextTitle: "You've reached the free garage limit",
-                    contextBody: "Free RaceLine accounts can save up to \(ProFeatureManager.freeBikeLimit) bikes. Unlimited bikes will be part of RaceLine Pro when it launches — for now, remove an existing bike from your garage to add a new one."
-                )
-                .presentationDetents([.large])
-            }
             .task {
                 garageStore.load()
                 await catalogService.loadMakesIfNeeded()
@@ -204,14 +194,8 @@ struct GarageView: View {
         .background(Color.appBg)
     }
 
-    /// Routes bike-add attempts through the Pro feature check so free users
-    /// with 2 bikes see the non-payment heads-up sheet instead of a broken form.
     private func attemptAddBike() {
-        if proFeatures.canAddBike(currentCount: garageStore.bikes.count) {
-            showAddBikeSheet = true
-        } else {
-            showBikeLimitSheet = true
-        }
+        showAddBikeSheet = true
     }
 
     /// Best-effort emit of a `bikeAdded` activity so the user's followers
