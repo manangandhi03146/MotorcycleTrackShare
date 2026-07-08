@@ -8,12 +8,16 @@ struct PublicProfileView: View {
     let userID: UUID
 
     @EnvironmentObject private var authService: AuthService
+    @EnvironmentObject private var moderation: ModerationService
+    @Environment(\.dismiss) private var dismiss
     @State private var profile: SocialProfile?
     @State private var loading = true
     @State private var isFollowing = false
     @State private var errorMessage: String?
     @State private var bikes: [RiderBike] = []
     @State private var stats: RiderStats?
+    @State private var showReport = false
+    @State private var showBlockConfirm = false
 
     private let profileService = SocialProfileService()
     private let followService = FollowService()
@@ -61,6 +65,48 @@ struct PublicProfileView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Color.appSurface, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
+        .toolbar {
+            if userID != authService.userID {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            showReport = true
+                        } label: {
+                            Label("Report Rider", systemImage: "flag")
+                        }
+                        if moderation.isBlocked(userID) {
+                            Button {
+                                Task { try? await moderation.unblock(userID) }
+                            } label: {
+                                Label("Unblock Rider", systemImage: "hand.raised.slash")
+                            }
+                        } else {
+                            Button(role: .destructive) {
+                                showBlockConfirm = true
+                            } label: {
+                                Label("Block Rider", systemImage: "hand.raised")
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showReport) {
+            ReportSheet(contentType: .profile, contentID: userID, reportedUserID: userID)
+        }
+        .confirmationDialog("Block this rider?", isPresented: $showBlockConfirm, titleVisibility: .visible) {
+            Button("Block", role: .destructive) {
+                Task {
+                    try? await moderation.block(userID)
+                    dismiss()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You won't see their profile, rides, or activity, and they won't see yours. You can unblock them later in Settings.")
+        }
         .task { await reload() }
     }
 

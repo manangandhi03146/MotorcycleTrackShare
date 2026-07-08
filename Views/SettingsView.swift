@@ -34,6 +34,8 @@ struct SettingsView: View {
     @State private var socialSaving        = false
     @State private var socialError: String?
     @State private var showSocialPrivacy   = false
+    @State private var showGuidelines      = false
+    @State private var showBlocked         = false
 
     private let socialProfileService = SocialProfileService()
 
@@ -211,34 +213,37 @@ struct SettingsView: View {
             }
             .listRowBackground(Color.appSurface)
 
-            // RaceLine Pro roadmap — foundation is in place; features remain free
-            // during Phase 2 while StoreKit and pricing land later.
+            // Safety & Community (App Store Guideline 1.2)
             Section {
-                proRoadmapRow(icon: "chart.bar.xaxis",
-                              title: "Advanced analytics",
-                              detail: "Available today via Analyze Ride")
-                proRoadmapRow(icon: "text.bubble",
-                              title: "AI ride summaries",
-                              detail: "Available today via Analyze Ride")
-                proRoadmapRow(icon: "square.and.arrow.up.on.square",
-                              title: "Export ride data",
-                              detail: "CSV, GPX, JSON from Analyze Ride")
-                proRoadmapRow(icon: "icloud.and.arrow.up",
-                              title: "Unlimited cloud rides",
-                              detail: "Cloud sync active — free cap is \(CloudBackupService.freeRideCap) rides")
-                proRoadmapRow(icon: "square.stack.3d.up",
-                              title: "Custom share cards",
-                              detail: "Foundation ready — new layouts coming")
-                proRoadmapRow(icon: "infinity",
-                              title: "Unlimited bikes",
-                              detail: "Free garage capped at \(ProFeatureManager.freeBikeLimit) bikes")
+                Button {
+                    showGuidelines = true
+                } label: {
+                    Label("Community Guidelines", systemImage: "hand.raised.fill")
+                        .foregroundStyle(Color.textPrimary)
+                }
+                Button {
+                    showBlocked = true
+                } label: {
+                    Label("Blocked Accounts", systemImage: "nosign")
+                        .foregroundStyle(Color.textPrimary)
+                }
+                Link(destination: URL(string: "https://racelineapp.com")!) {
+                    Label("Contact Support", systemImage: "envelope")
+                        .foregroundStyle(Color.textPrimary)
+                }
             } header: {
-                Text("RaceLine Pro")
+                Text("Safety & Community")
             } footer: {
-                Text("Pro isn't ready for purchase yet. Everything you can do in the app today stays free — these rows preview what Pro will bring.")
+                Text("Report or block riders anywhere in the community. We review every report within 24 hours and remove content or accounts that violate the guidelines.")
                     .font(.caption)
             }
             .listRowBackground(Color.appSurface)
+            .sheet(isPresented: $showGuidelines) {
+                CommunityGuidelinesView()
+            }
+            .sheet(isPresented: $showBlocked) {
+                NavigationStack { BlockedAccountsView() }
+            }
 
             // App info
             Section {
@@ -437,6 +442,8 @@ struct SettingsView: View {
         let username    = socialUsername.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let displayName = socialDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
+            try TextModeration.validate(displayName, field: "display name")
+            try TextModeration.validate(username, field: "username")
             let updated = try await socialProfileService.updateProfile(
                 userID: uid,
                 SocialProfileUpdate(
@@ -449,22 +456,6 @@ struct SettingsView: View {
             socialError = e.errorDescription
         } catch {
             socialError = "Couldn't save. Try again."
-        }
-    }
-
-    private func proRoadmapRow(icon: String, title: String, detail: String) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color.appAccent)
-                .frame(width: 22, alignment: .center)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 15, weight: .semibold))
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(Color.textSecondary)
-            }
         }
     }
 

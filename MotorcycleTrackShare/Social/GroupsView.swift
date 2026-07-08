@@ -6,14 +6,12 @@ import SwiftUI
 /// pushes into `GroupDetailView` on tap.
 struct GroupsView: View {
     @EnvironmentObject private var authService: AuthService
-    @EnvironmentObject private var proFeatures: ProFeatureManager
     @EnvironmentObject private var cache: SocialHubCache
 
     @State private var state: LoadState = .idle
     @State private var errorMessage: String?
     @State private var showCreateSheet = false
     @State private var showJoinSheet = false
-    @State private var showGroupLimitSheet = false
     @State private var actionError: String?
 
     private let service = GroupService()
@@ -102,22 +100,10 @@ struct GroupsView: View {
             }
             .presentationDetents([.medium, .large])
         }
-        .sheet(isPresented: $showGroupLimitSheet) {
-            ProUpgradeSheet(
-                feature: .unlimitedGroups,
-                contextTitle: "You've hit the free group-owner cap",
-                contextBody: "Free accounts can create up to \(ProFeatureManager.freeGroupLimit) groups. You can still join as many groups as you want with an invite code — the limit is only on groups you OWN. Delete or leave an owned group to free up a slot."
-            )
-            .presentationDetents([.large])
-        }
     }
 
     private func attemptCreate() {
-        if proFeatures.canCreateGroup(currentOwnedCount: ownedGroupCount) {
-            showCreateSheet = true
-        } else {
-            showGroupLimitSheet = true
-        }
+        showCreateSheet = true
     }
 
     private var actionBar: some View {
@@ -267,6 +253,8 @@ struct CreateGroupSheet: View {
         saving = true
         defer { saving = false }
         do {
+            try TextModeration.validate(name, field: "group name")
+            try TextModeration.validate(description, field: "description")
             let group = try await service.createGroup(
                 name: name,
                 description: description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : description,
@@ -278,7 +266,7 @@ struct CreateGroupSheet: View {
         } catch {
             let text = "\(error)"
             if text.contains("Free accounts can only create up to") {
-                errorMessage = "You've hit the \(ProFeatureManager.freeGroupLimit)-group ownership limit. Delete or leave an existing owned group to free up a slot."
+                errorMessage = "You've reached the maximum number of groups you can own right now. Leave or delete an owned group to free up a slot."
             } else if text.contains("Not authenticated") {
                 errorMessage = "Your session is signed out. Sign back in and try again."
             } else {

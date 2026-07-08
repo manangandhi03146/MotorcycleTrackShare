@@ -22,6 +22,7 @@ struct ContentView: View {
     @StateObject private var proFeatures      = ProFeatureManager()
     @StateObject private var cloudBackup      = CloudBackupService()
     @StateObject private var customShareCards = CustomShareCardService()
+    @StateObject private var moderation       = ModerationService()
     @State private var selectedTab: Tab = .ride
 
     // Phase 4 — banner shown on the recording screen when the ride
@@ -78,7 +79,7 @@ struct ContentView: View {
                             .environmentObject(rideStore)
                             .environmentObject(maintenanceStore)
                     } else if selectedTab == .social {
-                        SocialHubView()
+                        SocialGateView()
                     } else if selectedTab == .profile {
                         NavigationStack {
                             ProfileView()
@@ -121,6 +122,7 @@ struct ContentView: View {
         .environmentObject(proFeatures)
         .environmentObject(cloudBackup)
         .environmentObject(customShareCards)
+        .environmentObject(moderation)
         // Group ride "Start Ride" fires this notification. Kept at the
         // outer body so the observer survives tab switches — attaching
         // it to `rideRecordingView` (which is only rendered on the

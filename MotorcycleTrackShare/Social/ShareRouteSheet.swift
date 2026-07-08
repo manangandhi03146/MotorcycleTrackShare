@@ -224,6 +224,8 @@ struct ShareRouteSheet: View {
             routePoints: points
         )
         do {
+            try TextModeration.validate(title, field: "route name")
+            try TextModeration.validate(description, field: "description")
             let saved = try await routeService.post(insert)
             SharedRideRegistry.markShared(rideID: ride.id, userID: uid)
             // Skip the activity emit entirely for private routes — they
@@ -249,6 +251,8 @@ struct ShareRouteSheet: View {
                 ))
             }
             dismiss()
+        } catch let e as SocialError {
+            errorMessage = e.errorDescription
         } catch {
             errorMessage = userFacingSupabaseError(error, feature: "route sharing")
         }

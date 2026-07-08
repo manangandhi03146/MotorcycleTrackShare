@@ -14,7 +14,6 @@ struct AnalyzeRideView: View {
     var onRequestExport: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var proFeatures: ProFeatureManager
 
     @State private var samples: [RideSample] = []
     @State private var analytics: RideAnalytics = .empty
@@ -71,10 +70,6 @@ struct AnalyzeRideView: View {
     }
 
     private func requestSummary() async {
-        guard proFeatures.hasAccess(to: .aiRideSummary) else {
-            summaryState = .unavailable(reason: "AI ride summaries will be part of RaceLine Pro.")
-            return
-        }
         summaryState = .loading
         let input = AIRideSummaryInput.from(ride: ride, analytics: analytics)
         summaryState = await summaryService.summarize(input)
